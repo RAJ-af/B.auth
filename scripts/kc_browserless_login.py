@@ -52,6 +52,18 @@ def login(base_url: str, realm: str, client_id: str, redirect_uri: str,
         oform = next(f for f in parse_forms(body) if "totp" in (f["action"] or "") or "login-actions" in (f["action"] or ""))
         d = dict(oform["fields"]); d["otp"] = compute_totp(totp_secret)
         r = s.post(oform["action"], data=d)
+    elif 'name="totpSecret"' in body:
+        # First login: Configure-OTP required action. The enrollment form carries the
+        # server-generated secret in a hidden `totpSecret` field — override it with our
+        # known TEST_TOTP_SECRET_* so scripts stay deterministic (KC 26 has no admin
+        # endpoint to attach OTP credentials directly).
+        eform = next((f for f in parse_forms(body) if "totpSecret" in f["fields"]), None)
+        assert eform is not None, "no totp enrollment form"
+        d = dict(eform["fields"])
+        d["totpSecret"] = totp_secret
+        d["totp"] = compute_totp(totp_secret)
+        d["userLabel"] = "seeded"
+        r = s.post(eform["action"], data=d)
     loc = r.headers.get("location", "")
     assert "code=" in loc, f"expected code redirect, got {r.status_code}: {loc[:200]}"
     code = loc.split("code=")[1].split("&")[0]

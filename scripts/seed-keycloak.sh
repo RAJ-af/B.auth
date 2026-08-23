@@ -10,9 +10,9 @@ $KCADM create realms -s realm="$KC_REALM" -s enabled=true -s sslRequired=NONE \
   -s bruteForceProtected=true -s failureFactor=10 -s waitIncrementSeconds=900 \
   -s accessTokenLifespan=300 2>/dev/null || echo "realm exists"
 
-# OTP policy + required default action
-# KC 26.x: no /authentication/otp-policy sub-resource; policy fields live on the realm.
-# Required-action alias is uppercase (CONFIGURE_TOTP).
+# OTP policy + required default action.
+# KC 26.x: no /authentication/otp-policy sub-resource — the policy fields live on the
+# realm representation; the required-action alias is uppercase (CONFIGURE_TOTP).
 $KCADM update realms/"$KC_REALM" -r "$KC_REALM" \
   -s otpPolicyType=totp -s otpPolicyAlgorithm=HmacSHA1 -s otpPolicyDigits=6 \
   -s otpPolicyPeriod=30 -s otpPolicyLookAheadWindow=1
@@ -42,25 +42,43 @@ grep -q '^KC_INTROSPECTION_SECRET=' .env && \
   sed -i.bak "s|^KC_INTROSPECTION_SECRET=.*|KC_INTROSPECTION_SECRET=${SECRET}|" .env && rm -f .env.bak || \
   echo "KC_INTROSPECTION_SECRET=${SECRET}" >> .env
 
-# LDAP user federation
-$KCADM create components -r "$KC_REALM" -f - <<JSON || echo "federation exists"
+# LDAP user federation.
+# KC 26.x specifics vs upstream docs: config keys are usernameLDAPAttribute /
+# rdnLDAPAttribute / uuidLDAPAttribute (uppercase LDAP) and importEnabled;
+# parentId must be the REALM ID, not its name; and a child user-attribute-ldap-mapper
+# is required for lookups to resolve into users.
+RID=$($KCADM get realms/"$KC_REALM" -r master --fields id --format csv --noquotes | tail -1)
+CID_LDAP=$($KCADM create components -r "$KC_REALM" -f - -i <<JSON || $KCADM get "components?parent=${RID}&type=org.keycloak.storage.UserStorageProvider" -r "$KC_REALM" --format csv --noquotes | grep sovereign-ldap | cut -d, -f1 | tail -1
 {"name":"sovereign-ldap","providerId":"ldap","providerType":"org.keycloak.storage.UserStorageProvider",
- "parentId":"${KC_REALM}",
+ "parentId":"${RID}",
  "config":{"vendor":["other"],"enabled":["true"],"priority":["1"],
   "connectionUrl":["ldap://openldap:389"],"usersDn":["ou=people,dc=${MAIL_DOMAIN//./,dc=}"],
-  "usernameLdapAttribute":["mail"],"rdnLdapAttribute":["mail"],"uuidLdapAttribute":["entryUUID"],
+  "usernameLDAPAttribute":["mail"],"rdnLDAPAttribute":["mail"],"uuidLDAPAttribute":["entryUUID"],
   "userObjectClasses":["inetOrgPerson"],"editMode":["READ_ONLY"],
-  "searchScope":["1"],"authType":["none"],"pagination":["true"],"importUsers":["true"]}}
+  "searchScope":["1"],"authType":["none"],"pagination":["true"],"importEnabled":["true"]}}
 JSON
+)
+# Username + email mappers (email keeps the JWT email claim == LDAP mail).
+$KCADM create components -r "$KC_REALM" -f - >/dev/null <<JSON || echo "mapper exists"
+{"name":"username","providerId":"user-attribute-ldap-mapper",
+ "providerType":"org.keycloak.storage.ldap.mappers.LDAPStorageMapper","parentId":"${CID_LDAP}",
+ "config":{"ldap.attribute":["mail"],"user.model.attribute":["username"],
+  "read.only":["true"],"is.mandatory.in.ldap":["true"]}}
+JSON
+$KCADM create components -r "$KC_REALM" -f - >/dev/null <<JSON || echo "mapper exists"
+{"name":"email","providerId":"user-attribute-ldap-mapper",
+ "providerType":"org.keycloak.storage.ldap.mappers.LDAPStorageMapper","parentId":"${CID_LDAP}",
+ "config":{"ldap.attribute":["mail"],"user.model.attribute":["email"],
+  "read.only":["true"],"is.mandatory.in.ldap":["true"]}}
+JSON
+# Import the directory now so admin tooling sees alice/bob immediately.
+$KCADM create "user-storage/${CID_LDAP}/sync?action=triggerFullSync&parent=${RID}" \
+  -r "$KC_REALM" >/dev/null 2>&1 || echo "ldap sync failed"
 
-seeded_otp() { # $1=username $2=base32-secret
-  UID_=$($KCADM get "users?username=$1&exact=true" -r "$KC_REALM" --fields id --format csv --noquotes | tail -1)
-  $KCADM create "users/$UID_/credentials" -r "$KC_REALM" -f - >/dev/null <<JSON || echo "otp already set for $1"
-{"type":"otp","userLabel":"seeded","value":"unused",
- "secretData":"{\"value\":\"$2\"}","credentialData":"{\"digits\":6,\"period\":30,\"algorithm\":\"HmacSHA1\"}"}
-JSON
-}
-seeded_otp "$TEST_USER_ALICE" "$TEST_TOTP_SECRET_ALICE"
-seeded_otp "$TEST_USER_BOB" "$TEST_TOTP_SECRET_BOB"
+# NOTE: OTP credentials are NOT attached here — KC 26.x has no admin endpoint that
+# creates credentials for an existing user (POST /users/<id>/credentials is gone).
+# Instead CONFIGURE_TOTP is a default required action above, and
+# scripts/kc_browserless_login.py completes the enrollment form with the known
+# TEST_TOTP_SECRET_* from .env on first login per user (form-driven, no ROPC).
 
 echo "Keycloak seeded. Realm: $KC_REALM"
