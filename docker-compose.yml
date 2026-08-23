@@ -57,6 +57,20 @@ services:
       timeout: 5s
       retries: 30
       start_period: 60s
+  dovecot:
+    build: mail/dovecot
+    depends_on:
+      keycloak: {condition: service_healthy}
+      cert-init: {condition: service_completed_successfully}
+    environment:
+      KC_INTROSPECTION_SECRET: ${KC_INTROSPECTION_SECRET}
+    volumes:
+      - certs:/certs:ro
+      - maildir_vmail:/var/mail/vhosts
+      - ./config/dovecot/90-oauth2.conf.template:/templates/90-oauth2.conf.template:ro
+    networks: [mailnet]
+    ports:
+      - "127.0.0.1:1143:143"
 networks:
   mailnet:
     driver: bridge
