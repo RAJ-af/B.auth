@@ -1,8 +1,10 @@
 passdb oauth2 {
   driver = oauth2
   mechanisms = xoauth2 oauthbearer
+  # oauth2_* settings are only recognized INSIDE the passdb block on 2.3.x;
+  # top-level placement dies with "Unknown setting: oauth2_client_id".
+  oauth2_client_id = mail-introspection
+  oauth2_client_secret = __KC_INTROSPECTION_SECRET__
+  oauth2_openid_configuration = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
+  oauth2_username_attribute = preferred_username
 }
-oauth2_client_id = mail-introspection
-oauth2_client_secret = __KC_INTROSPECTION_SECRET__
-oauth2_openid_configuration = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
-oauth2_username_attribute = preferred_username
