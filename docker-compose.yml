@@ -1,0 +1,14 @@
+services: {}
+networks:
+  mailnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${COMPOSE_SUBNET}
+volumes:
+  pg_data: {}
+  ldap_data: {}
+  maildir_vmail: {}
+  rspamd_data: {}
+  dkim_keys: {}
+  certs: {}
