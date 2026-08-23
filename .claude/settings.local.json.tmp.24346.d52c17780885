@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(mkdir -p docs/superpowers/specs)",
+      "Bash(printf '.env\\\\n__pycache__/\\\\n*.pyc\\\\n.venv/\\\\nvenv/\\\\n.pytest_cache/\\\\ncerts/\\\\n*.pem\\\\n!docs/**/*.pem\\\\n')",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git commit -q -m ' *)"
+    ]
+  }
+}
