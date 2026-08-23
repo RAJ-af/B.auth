@@ -47,6 +47,9 @@ def login(base_url: str, realm: str, client_id: str, redirect_uri: str,
     assert form, f"no login form; status={r.status_code}"
     data = dict(form["fields"]); data.update({"username": username, "password": password, "login": "Sign In"})
     r = s.post(form["action"], data=data)
+    # Required actions arrive as a redirect to /login-actions/required-action.
+    if r.is_redirect and "required-action" in (r.headers.get("location") or ""):
+        r = s.get(r.headers["location"])
     body = r.text
     if 'name="otp"' in body:
         oform = next(f for f in parse_forms(body) if "totp" in (f["action"] or "") or "login-actions" in (f["action"] or ""))
