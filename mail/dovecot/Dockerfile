@@ -3,7 +3,7 @@
 # Debian's packaged Dovecot (2.3.x) ships oauth2 support compiled in.
 FROM debian:bookworm-20260803-slim
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    dovecot-core dovecot-lmtpd gettext-base && rm -rf /var/lib/apt/lists/*
+    dovecot-core dovecot-imapd dovecot-lmtpd gettext-base && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 5000 vmail && useradd -u 5000 -g 5000 -d /var/mail/vhosts -M vmail
 COPY entrypoint.sh /entrypoint-custom.sh
 # dovecot.conf is bind-mounted read-only by docker-compose.yml (it lives in
