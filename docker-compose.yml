@@ -67,6 +67,7 @@ services:
     volumes:
       - certs:/certs:ro
       - maildir_vmail:/var/mail/vhosts
+      - ./config/dovecot/dovecot.conf:/etc/dovecot/dovecot.conf:ro
       - ./config/dovecot/90-oauth2.conf.template:/templates/90-oauth2.conf.template:ro
     networks: [mailnet]
     ports:
