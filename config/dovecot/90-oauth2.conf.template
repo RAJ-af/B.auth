@@ -1,15 +1,13 @@
-# New-style passdb block REQUIRED: the old-style "passdb oauth2 { ... }" header makes
-# 2.3.x's config parser reject every inner setting as "Unknown setting:
-# passdb { <setting>". oauth2_* settings live inside this block.
-passdb {
+# oauth2_* MUST stay TOP-LEVEL on 2.3.x: placing them inside any passdb block makes
+# doveconf reject each one as "Unknown setting: passdb { <setting>".
+# Variant A: OpenID discovery (introspection endpoint read from
+# /.well-known/openid-configuration). Internal KC hop is plain HTTP under
+# start-dev — recorded trade-off #2.
+passdb oauth2 {
   driver = oauth2
   mechanisms = xoauth2 oauthbearer
-
-  # Variant A: OpenID discovery (introspection endpoint read from
-  # /.well-known/openid-configuration). Internal KC hop is plain HTTP under
-  # start-dev — recorded trade-off #2.
-  oauth2_client_id = mail-introspection
-  oauth2_client_secret = __KC_INTROSPECTION_SECRET__
-  oauth2_openid_configuration = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
-  oauth2_username_attribute = preferred_username
 }
+oauth2_client_id = mail-introspection
+oauth2_client_secret = __KC_INTROSPECTION_SECRET__
+oauth2_openid_configuration = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
+oauth2_username_attribute = preferred_username
