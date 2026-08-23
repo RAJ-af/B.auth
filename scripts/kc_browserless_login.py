@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """Browser-less Keycloak login: authorization-code + PKCE driving the HTML forms."""
 import argparse, html.parser, json, sys, os
-import http.cookiejar
 import httpx
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api"))
 from app.pkce_util import make_pkce_pair, compute_totp
 
 
-class _LocalhostSecureOkPolicy(http.cookiejar.DefaultCookiePolicy):
-    """Keycloak marks session cookies Secure (http://localhost counts as a secure
-    context server-side), but the stdlib jar refuses to send Secure cookies back
-    over plain HTTP. Browsers exempt localhost; mirror that behavior here."""
-
-    def set_ok_secure(self, cookie, request):
-        return True
-
-    def return_ok_secure(self, cookie, request):
-        return True
+def _relax_cookie_flags(jar):
+    """Keycloak marks its session cookies `Secure` and `Version=1` because
+    http://localhost counts as a secure context server-side. Browsers exempt
+    localhost from both rules; Python's cookie jar does not, so clear the flags
+    on stored cookies after every response (client-side only)."""
+    def _hook(_response=None):
+        for c in jar:
+            c.version = 0
+            c.rfc2109 = False
+            c.secure = False
+    return _hook
 
 class _Form(html.parser.HTMLParser):
     def __init__(self):
@@ -36,8 +36,8 @@ def parse_forms(body: str):
 
 def login(base_url: str, realm: str, client_id: str, redirect_uri: str,
           username: str, password: str, totp_secret: str) -> dict:
-    s = httpx.Client(base_url=base_url, follow_redirects=False, timeout=30.0,
-                     cookies=http.cookiejar.CookieJar(policy=_LocalhostSecureOkPolicy()))
+    s = httpx.Client(base_url=base_url, follow_redirects=False, timeout=30.0)
+    s.event_hooks["response"] = [_relax_cookie_flags(s.cookies.jar)]
     verifier, challenge = make_pkce_pair()
     r = s.get(f"/realms/{realm}/protocol/openid-connect/auth", params={
         "response_type": "code", "client_id": client_id, "redirect_uri": redirect_uri,
