@@ -3,7 +3,7 @@
 import argparse, html.parser, json, sys, os
 import httpx
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api"))
-from app.pkce_util import make_pkce_pair, compute_totp, compute_totp_kc
+from app.pkce_util import make_pkce_pair, compute_totp_kc
 
 
 def _relax_cookie_flags(jar):

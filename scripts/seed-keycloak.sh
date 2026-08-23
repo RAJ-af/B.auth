@@ -37,9 +37,8 @@ CID=$($KCADM create clients -r "$KC_REALM" -f - -i <<JSON
  "directAccessGrantsEnabled":false,"secret":"${SECRET}"}
 JSON
 )
-$KCADM set-password 2>/dev/null || true
 grep -q '^KC_INTROSPECTION_SECRET=' .env && \
-  sed -i.bak "s|^KC_INTROSPECTION_SECRET=.*|KC_INTROSPECTION_SECRET=${SECRET}|" .env && rm -f .env.bak || \
+  sed -i "s|^KC_INTROSPECTION_SECRET=.*|KC_INTROSPECTION_SECRET=${SECRET}|" .env || \
   echo "KC_INTROSPECTION_SECRET=${SECRET}" >> .env
 
 # LDAP user federation.
