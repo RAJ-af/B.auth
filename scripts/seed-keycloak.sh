@@ -11,10 +11,12 @@ $KCADM create realms -s realm="$KC_REALM" -s enabled=true -s sslRequired=NONE \
   -s accessTokenLifespan=300 2>/dev/null || echo "realm exists"
 
 # OTP policy + required default action
-$KCADM update authentication/otp-policy -r "$KC_REALM" \
+# KC 26.x: no /authentication/otp-policy sub-resource; policy fields live on the realm.
+# Required-action alias is uppercase (CONFIGURE_TOTP).
+$KCADM update realms/"$KC_REALM" -r "$KC_REALM" \
   -s otpPolicyType=totp -s otpPolicyAlgorithm=HmacSHA1 -s otpPolicyDigits=6 \
   -s otpPolicyPeriod=30 -s otpPolicyLookAheadWindow=1
-$KCADM update authentication/required-actions/configure-otp -r "$KC_REALM" \
+$KCADM update authentication/required-actions/CONFIGURE_TOTP -r "$KC_REALM" \
   -s enabled=true -s defaultAction=true
 
 # Public PKCE client
