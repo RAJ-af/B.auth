@@ -574,6 +574,9 @@ python3 scripts/kc_browserless_login.py --base-url http://localhost:8080 --realm
   --username alice@sovereign.mail --password "$(grep TEST_USER_PASSWORD .env | cut -d= -f2)" \
   --totp-secret "$(grep TEST_TOTP_SECRET_ALICE .env | cut -d= -f2)" | python3 -c "import sys,json; t=json.load(sys.stdin); assert 'access_token' in t; print('LOGIN OK')"
 grep -q '^KC_INTROSPECTION_SECRET=[0-9a-f]' .env && echo "SECRET PERSISTED TO .env"
+# Secret hygiene gates (spec §8 #8): never in git, never in .env.example
+git check-ignore -q .env && echo ".env GITIGNORED" || { echo "FAIL: .env not ignored"; exit 1; }
+grep -q '^KC_INTROSPECTION_SECRET=$' .env.example || { echo "FAIL: example has non-empty secret"; exit 1; }
 ```
 Expected: discovery JSON printed; `LOGIN OK`; `SECRET PERSISTED TO .env`. If the OTP
 page/form detection fails, dump `r.status_code` and a snippet of `body` around
@@ -2382,6 +2385,16 @@ curl -sf "http://localhost:8025/api/v1/messages" | \
 
 echo "== 7. dns records doc has dkim pubkey =="
 grep -q "v=DKIM1\|public" docs/dns-records.txt || { echo "dns-records incomplete"; exit 1; }
+
+echo "== 8. secret hygiene (spec §8 #8) =="
+git check-ignore -q .env || { echo "FAIL: .env not gitignored"; exit 1; }
+SECRET=$(grep '^KC_INTROSPECTION_SECRET=' .env | cut -d= -f2)
+if [ -n "$SECRET" ] && git log --all -p | grep -qF "$SECRET"; then
+  echo "FAIL: introspection secret found in git history"; exit 1
+fi
+grep -rqE "INTROSPECTION" api/Dockerfile mail/*/Dockerfile \
+  && { echo "FAIL: secret referenced in an image build"; exit 1; }
+echo "secret hygiene ok"
 
 echo "SMOKE TEST PASSED"
 ```
