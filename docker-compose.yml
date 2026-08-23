@@ -6,6 +6,22 @@ services:
       - ./scripts/gen-certs.sh:/gen-certs.sh:ro
       - certs:/certs
     restart: "no"
+  openldap:
+    image: osixia/openldap:1.5.0
+    command: ["--copy-service"]
+    environment:
+      LDAP_ORGANISATION: Sovereign
+      LDAP_DOMAIN: ${LDAP_DOMAIN}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ROOT_PASSWORD}
+    volumes:
+      - ldap_data:/var/lib/ldap
+      - ldap_data:/etc/ldap/slapd.d
+    networks: [mailnet]
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost:389 -b '' -s base >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 networks:
   mailnet:
     driver: bridge

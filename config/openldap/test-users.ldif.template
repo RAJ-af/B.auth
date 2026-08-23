@@ -1,0 +1,19 @@
+dn: ou=people,dc=__DOMAIN_RDN__
+objectClass: organizationalUnit
+ou: people
+
+dn: mail=__ALICE__,ou=people,dc=__DOMAIN_RDN__
+objectClass: inetOrgPerson
+cn: Alice Example
+sn: Example
+displayName: Alice
+mail: __ALICE__
+userPassword: __PASSWORD__
+
+dn: mail=__BOB__,ou=people,dc=__DOMAIN_RDN__
+objectClass: inetOrgPerson
+cn: Bob Example
+sn: Example
+displayName: Bob
+mail: __BOB__
+userPassword: __PASSWORD__
