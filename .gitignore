@@ -7,3 +7,4 @@ venv/
 certs/
 *.pem
 !docs/**/*.pem
+.claude/settings.local.json*
