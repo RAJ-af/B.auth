@@ -1,13 +1,14 @@
-# oauth2_* MUST stay TOP-LEVEL on 2.3.x: placing them inside any passdb block makes
-# doveconf reject each one as "Unknown setting: passdb { <setting>".
-# Variant A: OpenID discovery (introspection endpoint read from
-# /.well-known/openid-configuration). Internal KC hop is plain HTTP under
-# start-dev — recorded trade-off #2.
-passdb oauth2 {
-  driver = oauth2
-  mechanisms = xoauth2 oauthbearer
-}
-oauth2_client_id = mail-introspection
-oauth2_client_secret = __KC_INTROSPECTION_SECRET__
-oauth2_openid_configuration = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
-oauth2_username_attribute = preferred_username
+# Dovecot 2.3.x OAuth2 passdb args file. Rendered by the container entrypoint into
+# /etc/dovecot/dovecot-oauth2.conf.ext (referenced by passdb { args = ... } in
+# dovecot.conf). These keys are NOT dovecot.conf settings — putting them there dies
+# with "Unknown setting".
+#
+# Variant A (discovery): introspection endpoint + JWKS are read from Keycloak's
+# /.well-known/openid-configuration. Internal KC hop is plain HTTP under start-dev —
+# recorded trade-off #2.
+# Variant B (fallback if A fails): replace the discovery line below with
+#   introspection_url = http://keycloak:8080/realms/sovereign/protocol/openid-connect/token/introspect
+openid_configuration_url = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
+client_id = mail-introspection
+client_secret = __KC_INTROSPECTION_SECRET__
+username_attribute = preferred_username
