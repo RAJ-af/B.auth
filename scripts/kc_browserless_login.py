@@ -3,7 +3,7 @@
 import argparse, html.parser, json, sys, os
 import httpx
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "api"))
-from app.pkce_util import make_pkce_pair, compute_totp
+from app.pkce_util import make_pkce_pair, compute_totp, compute_totp_kc
 
 
 def _relax_cookie_flags(jar):
@@ -53,18 +53,22 @@ def login(base_url: str, realm: str, client_id: str, redirect_uri: str,
     body = r.text
     if 'name="otp"' in body:
         oform = next(f for f in parse_forms(body) if "totp" in (f["action"] or "") or "login-actions" in (f["action"] or ""))
-        d = dict(oform["fields"]); d["otp"] = compute_totp(totp_secret)
+        # compute_totp_kc, not RFC compute_totp: KC validates against the raw bytes of
+        # the stored base32 string (see compute_totp_kc docstring), so the credential
+        # enrolled below only ever matches string-byte-keyed codes.
+        d = dict(oform["fields"]); d["otp"] = compute_totp_kc(totp_secret)
         r = s.post(oform["action"], data=d)
     elif 'name="totpSecret"' in body:
         # First login: Configure-OTP required action. The enrollment form carries the
         # server-generated secret in a hidden `totpSecret` field — override it with our
         # known TEST_TOTP_SECRET_* so scripts stay deterministic (KC 26 has no admin
-        # endpoint to attach OTP credentials directly).
+        # endpoint to attach OTP credentials directly). KC stores the string verbatim
+        # and validates codes keyed on its raw UTF-8 bytes → compute_totp_kc.
         eform = next((f for f in parse_forms(body) if "totpSecret" in f["fields"]), None)
         assert eform is not None, "no totp enrollment form"
         d = dict(eform["fields"])
         d["totpSecret"] = totp_secret
-        d["totp"] = compute_totp(totp_secret)
+        d["totp"] = compute_totp_kc(totp_secret)
         d["userLabel"] = "seeded"
         r = s.post(eform["action"], data=d)
     loc = r.headers.get("location", "")
