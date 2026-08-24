@@ -9,6 +9,12 @@ structure into Python values (NIL -> None, integers -> int, quoted strings -> st
 Documented limitation (Phase 2): non-ASCII header values arrive as {n} literals on the
 wire; this parser does not consume IMAP literals inside ENVELOPE — lab traffic is ASCII.
 """
+# Lazy annotations: MailSession defines a method named `list`, which shadows the
+# builtin inside the class body; on Python <=3.13 eager annotation evaluation makes
+# `-> list[...]` on later methods raise TypeError ('function' object is not
+# subscriptable). Verified empirically on py3.12; py3.14+ (PEP 649 default) hides it.
+from __future__ import annotations
+
 import asyncio
 import base64
 import email
