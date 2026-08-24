@@ -156,4 +156,4 @@ mailman   unix  -       n       n       -       -       pipe
   -o smtpd_client_restrictions=permit_mynetworks,reject
   -o smtpd_relay_restrictions=permit_mynetworks,reject
   -o smtpd_recipient_restrictions=permit_mynetworks,reject
-  # Task 6 restores: -o smtpd_milters=inet:rspamd:11332
+  -o smtpd_milters=inet:rspamd:11332

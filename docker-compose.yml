@@ -79,7 +79,7 @@ services:
   postfix:
     build: mail/postfix
     depends_on:
-      # Task 6 adds: rspamd: {condition: service_started}
+      rspamd: {condition: service_started}
       dovecot: {condition: service_started}
       cert-init: {condition: service_completed_successfully}
     environment:
@@ -94,6 +94,25 @@ services:
     networks: [mailnet]
     ports:
       - "127.0.0.1:8025:8025"
+  redis:
+    image: redis:7-alpine
+    networks: [mailnet]
+  rspamd:
+    # healthcheck note: rspamd/rspamd:3.9 ships no nc/socat; the probe runs a
+    # real scan through the proxy worker with rspamc instead (gates on the
+    # milter protocol on 11332, not just a TCP connect).
+    image: rspamd/rspamd:3.9
+    hostname: rspamd
+    volumes:
+      - rspamd_data:/var/lib/rspamd
+      - dkim_keys:/var/lib/rspamd/dkim
+      - ./config/rspamd/local.d:/etc/rspamd/local.d:ro
+    networks: [mailnet]
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'Subject: healthcheck' | rspamc -h localhost:11332 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 networks:
   mailnet:
     driver: bridge

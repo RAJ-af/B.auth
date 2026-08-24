@@ -10,9 +10,7 @@ virtual_transport = lmtp:[dovecot]:24
 
 relayhost = [mailpit]:1025
 
-# Task 6 restores: smtpd_milters = inet:rspamd:11332
-# (rspamd service does not exist until Task 6; pointing at it now would tempfail
-# every message because milter_default_action = tempfail.)
+smtpd_milters = inet:rspamd:11332
 non_smtpd_milters =
 milter_default_action = tempfail
 milter_protocol = 6
