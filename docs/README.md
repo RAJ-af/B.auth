@@ -134,9 +134,18 @@ Register (Phase 2 backlog)**. The load-bearing items:
   trust, not credential trust. Sender identity binding (From := token claim)
   lives ONLY in the API layer (`api/app/routers/send_router.py enforce_sender`).
   Anyone who can reach :2587 from inside the compose network can submit as
-  anyone — acceptable at MVP; Phase-2 candidate: SMTP XOAUTH2. Plain :25 relay
-  from compose-net containers via `permit_mynetworks` sits behind the same
-  boundary.
+  anyone — acceptable at MVP; Phase-2 candidate: SMTP XOAUTH2.
+
+  The plain :25 listener is NOT part of that boundary: `mail/postfix/
+  main.cf.template` sets no `mynetworks`, so the :25 smtpd falls back to
+  postfix's loopback-only default (`postconf mynetworks` on the running stack:
+  `127.0.0.1/32 <postfix's own IP>/32 [::1]/128`). Other compose containers
+  therefore CANNOT relay off-site via :25 — they may only hand it mail addressed
+  to local virtual domains (which is all the smoke test's spam probe needs).
+  The network-position trust boundary lives wholly on the :2587 master.cf
+  override (`mynetworks = 127.0.0.0/8, <compose subnet>` + permit_mynetworks);
+  the Phase-2 recommendation above covers retiring it in favor of authenticated
+  submission.
 
   > ⚠ **Before any VPS / real-domain phase: replace with authenticated submission
   > (Dovecot-SASL OAuth2 or per-user credentials). Network isolation will NOT carry over

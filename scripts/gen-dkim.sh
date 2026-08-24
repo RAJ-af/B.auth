@@ -48,6 +48,15 @@ emit_dkim_record() {
   echo "# DMARC:"
   echo "_dmarc.${MAIL_DOMAIN}. IN TXT \"v=DMARC1; p=quarantine; rua=mailto:dmarc@${MAIL_DOMAIN}\""
   echo "# DKIM (selector: default):"
+  # Freshness/key-size NOTE is part of generation itself so regeneration stays
+  # self-consistent — a hand-added note would be clobbered by the very next run.
+  cat <<'NOTE'
+# NOTE: key size is rspamadm dkim_keygen's default (1024-bit) -- fine for the
+# lab; regenerate at >= 2048 bits before real-world use. This record reflects
+# whatever key currently sits in the dkim_keys volume: that volume (and thus
+# the key) is wiped by `docker compose down -v`, so re-run scripts/gen-dkim.sh
+# after any clean-room rebuild and apply the refreshed record below.
+NOTE
   emit_dkim_record
 } > docs/dns-records.txt
 cat docs/dns-records.txt

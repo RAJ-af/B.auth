@@ -4,10 +4,9 @@ sovereign.mail. IN TXT "v=spf1 ip4:<VPS_IP> -all"
 # DMARC:
 _dmarc.sovereign.mail. IN TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@sovereign.mail"
 # DKIM (selector: default):
-# NOTE: this DKIM public key matches the dkim_keys volume as of the final
-# clean-room verification run (2026-08-24). The key is regenerated whenever
-# that volume is wiped (docker compose down -v) — re-run scripts/gen-dkim.sh
-# and replace the record below after any clean-room rebuild. Key size is
-# rspamadm dkim_keygen's default (1024-bit): fine for the lab; regenerate at
-# >= 2048 bits before real-world use.
+# NOTE: key size is rspamadm dkim_keygen's default (1024-bit) -- fine for the
+# lab; regenerate at >= 2048 bits before real-world use. This record reflects
+# whatever key currently sits in the dkim_keys volume: that volume (and thus
+# the key) is wiped by `docker compose down -v`, so re-run scripts/gen-dkim.sh
+# after any clean-room rebuild and apply the refreshed record below.
 default._domainkey.sovereign.mail. IN TXT "v=DKIM1;k=rsa;p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDCUJFW/tFjsGRPSknoqqacwgoORTpBSCi7d99PBuInf33NJhVhDHS1gc02Xl1pdAwPcwJoSU7d0exhioYI2DNoITKIlV4pqZIl0tzM45t+RTKhpLGTiVXzlgW6kztNt97ZGVIgSWsTVt1aQtu9Ge1iBzs75/nRYy6QSAJpjv5dmQIDAQAB"
