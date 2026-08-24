@@ -46,7 +46,7 @@ def test_body_limit():
 
 class FakeSMTP:
     sent = None
-    def __init__(self, host, port, timeout=None): pass
+    def __init__(self, host, port, timeout=None, local_hostname=None): pass
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def starttls(self, context=None): pass

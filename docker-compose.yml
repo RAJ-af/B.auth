@@ -7,6 +7,7 @@ services:
       - certs:/certs
     restart: "no"
   openldap:
+    restart: "unless-stopped"
     image: osixia/openldap:1.5.0
     command: ["--copy-service"]
     environment:
@@ -23,6 +24,7 @@ services:
       timeout: 3s
       retries: 20
   postgres:
+    restart: "unless-stopped"
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -36,6 +38,7 @@ services:
       timeout: 3s
       retries: 20
   keycloak:
+    restart: "unless-stopped"
     image: quay.io/keycloak/keycloak:26.0
     # --hostname pins the canonical frontend/issuer URL: tokens carry
     # iss=http://localhost:8080/realms/<realm>, and KC validates introspected tokens
@@ -62,6 +65,7 @@ services:
       retries: 30
       start_period: 60s
   dovecot:
+    restart: "unless-stopped"
     build: mail/dovecot
     depends_on:
       keycloak: {condition: service_healthy}
@@ -77,6 +81,7 @@ services:
     ports:
       - "127.0.0.1:1143:143"
   postfix:
+    restart: "unless-stopped"
     build: mail/postfix
     depends_on:
       rspamd: {condition: service_started}
@@ -90,11 +95,13 @@ services:
     ports:
       - "127.0.0.1:25:25"
   mailpit:
+    restart: "unless-stopped"
     image: axllent/mailpit:v1.22
     networks: [mailnet]
     ports:
       - "127.0.0.1:8025:8025"
   api:
+    restart: "unless-stopped"
     build: api
     depends_on:
       keycloak: {condition: service_healthy}
@@ -114,9 +121,11 @@ services:
     ports:
       - "127.0.0.1:${API_PORT}:8000"
   redis:
+    restart: "unless-stopped"
     image: redis:7-alpine
     networks: [mailnet]
   rspamd:
+    restart: "unless-stopped"
     # healthcheck note: rspamd/rspamd:3.9 ships no nc/socat, and its proxy
     # worker rejects rspamc's HTTP POST on the milter socket ("HTTP POST
     # request is not supported in milter mode"), so the probe is a plain TCP

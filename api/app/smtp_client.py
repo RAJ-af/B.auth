@@ -57,7 +57,10 @@ def submit_message(msg: EmailMessage, envelope_rcpts: list[str]) -> None:
     s = get_settings()
     try:
         ctx = ssl.create_default_context(cafile=s.ca_cert_path)   # CA + hostname checks ON
-        with smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=30) as smtp:
+        # local_hostname: announce our mail domain in HELO/EHLO instead of the
+        # bare container IP — sheds Rspamd's HFILTER_HELO_BAREIP on every send.
+        with smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=30,
+                          local_hostname=s.mail_domain) as smtp:
             smtp.starttls(context=ctx)
             smtp.send_message(msg, from_addr=msg["From"], to_addrs=envelope_rcpts)
     except (smtplib.SMTPException, OSError, ssl.SSLError) as e:
