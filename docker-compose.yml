@@ -37,7 +37,11 @@ services:
       retries: 20
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
-    command: ["start-dev", "--import-realm"]   # import unused; keeps flags explicit
+    # --hostname pins the canonical frontend/issuer URL: tokens carry
+    # iss=http://localhost:8080/realms/<realm>, and KC validates introspected tokens
+    # against the REQUEST Host otherwise — container-side callers (dovecot) would see
+    # {"active":false} for perfectly valid tokens (verified empirically, Task 4 spike).
+    command: ["start-dev", "--import-realm", "--hostname", "http://localhost:${KEYCLOAK_PORT}"]
     depends_on:
       postgres: {condition: service_healthy}
     environment:
