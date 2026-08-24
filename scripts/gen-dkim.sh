@@ -23,7 +23,7 @@ fi
 # the private key stays inside the dkim_keys volume.
 emit_dkim_record() {
   local from_file pub_b64
-  from_file="$(docker compose exec -T rspamd sh -c 'tr -d "\n" < /var/lib/rspamd/dkim/default.public.dns.txt 2>/dev/null' || true)"
+  from_file="$(docker compose exec -T rspamd sh -c 'tr -d "\n" < /var/lib/rspamd/dkim/default.public.dns.txt' 2>/dev/null || true)"
   if [ -n "${from_file}" ]; then
     printf '%s\n' "${from_file}"
     return
