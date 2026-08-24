@@ -9,11 +9,13 @@
 # the discovery document is fetchable. Internal KC hop is plain HTTP under start-dev —
 # recorded trade-off #2.
 introspection_url = http://keycloak:8080/realms/sovereign/protocol/openid-connect/token/introspect
-# 2.3.x default is "auth" (token sent as Basic-auth username) which Keycloak rejects
-# with an empty user; RFC 7662 form POST + client Basic auth is what KC expects.
+# Default mode is "auth": a GET with the token as Authorization: Bearer — Keycloak's
+# RFC 7662 endpoint does not accept that (it wants form POST). "post" sends
+# token + client_id + client_secret as urlencoded form fields, which KC accepts.
 introspection_mode = post
-# Explicit active-field check: relying on defaults made 2.3.19 reject KC's JSON
-# boolean true ("Processing field active" -> "Provided token is not valid").
+# Explicit active-field check: KC returns JSON boolean true, which dovecot compares
+# as the string "true". Kept explicit after debugging ("Processing field active"
+# -> "Provided token is not valid" when the value did not match).
 active_attribute = active
 active_value = true
 client_id = mail-introspection
