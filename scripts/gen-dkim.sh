@@ -6,6 +6,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source .env
+# dkim_keygen runs inside the rspamd container, so it must be up. In the
+# clean-room quickstart the core stage starts only cert-init/openldap/postgres/
+# keycloak, so start rspamd here if the caller hasn't already.
+docker compose up -d rspamd
+for _ in $(seq 1 30); do
+  docker compose exec -T rspamd true 2>/dev/null && break
+  sleep 1
+done
 # The rspamd image runs as uid 11333 (_rspamd); the dkim_keys volume starts
 # root-owned, so create the target dir and hand it to _rspamd first.
 docker compose exec -T --user root rspamd sh -c \
