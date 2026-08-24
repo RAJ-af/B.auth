@@ -172,6 +172,11 @@ Register (Phase 2 backlog)**. The load-bearing items:
   intentionally echo downstream error text (`DownstreamError` str) for
   debuggability. Audited as carrying no credentials on all reachable paths;
   raw tracebacks and exception class names are never echoed.
+- **Redirect-URI matching is fnmatch-glob today** (Phase-2 hardening): a
+  wildcard pattern such as `http://localhost:*/*` admits authority-confusion
+  URIs like `http://localhost:p@evil.com/` at the pattern layer. Backstopped in
+  MVP by Keycloak's server-side client allow-list; Phase 2 should compare parsed
+  scheme/host/port against an explicit allow-list instead of globbing.
 - **Known MVP gaps** (details in §8): Keycloak `start-dev`, self-signed CA,
   no quotas/rate limiting, in-memory callback state, metadata-only attachments.
 

@@ -71,10 +71,12 @@ def test_parse_envelope_response_tolerates_mixed_entries():
 def test_parse_envelope_response_flag_named_envelope_does_not_shadow():
     # A custom flag atom literally named ENVELOPE must not be taken for the
     # structure: the search is anchored on b"ENVELOPE (" so this row parses
-    # instead of being silently dropped.
+    # instead of being silently dropped. The atom sits MID-LIST (followed by
+    # \Answered, i.e. by a space) — placed last it would precede ')' and even
+    # the old bare-atom search survived that shape (reviewer F1).
     shadowed = (
         b"OK",
-        [b'5 (UID 11 FLAGS (\\Seen ENVELOPE) RFC822.SIZE 42 INTERNALDATE '
+        [b'5 (UID 11 FLAGS (ENVELOPE \\Answered) RFC822.SIZE 42 INTERNALDATE '
          b'"24-Aug-2026 10:00:00 +0000" ENVELOPE (NIL "S" ((NIL NIL "a" "b.c")) '
          b'NIL NIL ((NIL NIL "d" "e.f")) NIL NIL NIL NIL))'],
     )

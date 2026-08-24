@@ -112,7 +112,10 @@ is slow; nothing may race it).
     (the API middleware requires this in `aud`).
 - **TOTP:** OTP policy TOTP/SHA1/6-digit/30s; Required Action *Configure OTP* enabled AND
   set as default → every login enforces second factor. Smoke-test users get **pre-seeded
-  known OTP secrets** written via the credentials admin API so scripts can compute codes.
+  known OTP secrets** so scripts can compute codes — provisioned via the *Configure OTP*
+  form itself during first browserless login (Keycloak 26.x exposes no
+  create-credentials admin endpoint; the login helper overrides the hidden `totpSecret`
+  field with the seeded value), not via any credentials admin API.
 - **Brute-force detection enabled** (temporary lockout). This is the only rate-limiting in
   MVP #1 (see trade-offs register).
 
