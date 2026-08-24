@@ -9,6 +9,9 @@
 # the discovery document is fetchable. Internal KC hop is plain HTTP under start-dev —
 # recorded trade-off #2.
 introspection_url = http://keycloak:8080/realms/sovereign/protocol/openid-connect/token/introspect
+# 2.3.x default is "auth" (token sent as Basic-auth username) which Keycloak rejects
+# with an empty user; RFC 7662 form POST + client Basic auth is what KC expects.
+introspection_mode = post
 client_id = mail-introspection
 client_secret = __KC_INTROSPECTION_SECRET__
 username_attribute = preferred_username
