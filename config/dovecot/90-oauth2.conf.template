@@ -15,7 +15,7 @@ introspection_mode = post
 # Explicit active-field check: relying on defaults made 2.3.19 reject KC's JSON
 # boolean true ("Processing field active" -> "Provided token is not valid").
 active_attribute = active
-active_value = yes
+active_value = true
 client_id = mail-introspection
 client_secret = __KC_INTROSPECTION_SECRET__
 username_attribute = preferred_username
