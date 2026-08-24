@@ -116,3 +116,53 @@ def test_send_recipient_over_limit_maps_422(monkeypatch):
         json={"to": [f"u{i}@x.y" for i in range(RECIPIENT_LIMIT + 1)],
               "subject": "Y", "text": "hi"})
     assert r.status_code == 422
+
+def test_send_crlf_recipient_rejected(monkeypatch):
+    # CR/LF in a recipient is header/protocol injection — 422, never submitted.
+    r = make_client(monkeypatch).post(
+        "/send", headers=auth(),
+        json={"to": ["bob@sovereign.mail\r\nBCC: victim@example.net"],
+              "subject": "Y", "text": "hi"})
+    assert r.status_code == 422
+    assert FakeSMTP.sent is None
+
+def test_send_comma_recipient_rejected(monkeypatch):
+    # A comma would silently split one string into two envelope recipients.
+    r = make_client(monkeypatch).post(
+        "/send", headers=auth(),
+        json={"to": ["a@x.y,b@x.y"], "subject": "Y", "text": "hi"})
+    assert r.status_code == 422
+    assert FakeSMTP.sent is None
+
+def test_send_angle_bracket_recipient_rejected(monkeypatch):
+    r = make_client(monkeypatch).post(
+        "/send", headers=auth(),
+        json={"to": ["<spoof@x.y>"], "subject": "Y", "text": "hi"})
+    assert r.status_code == 422
+
+def test_send_crlf_subject_maps_422_not_500(monkeypatch):
+    # headerregistry raises ValueError at build time; build_mime sits inside the
+    # router's ValueError->422 handler, so this must not surface as a 500.
+    r = make_client(monkeypatch).post(
+        "/send", headers=auth(),
+        json={"to": ["bob@sovereign.mail"], "subject": "Hi\r\nX-Evil: 1",
+              "text": "hi"})
+    assert r.status_code == 422
+
+def test_body_limit_counts_utf8_bytes():
+    # Limit is wire bytes, not len(str) characters: a 2-byte char halves the
+    # character budget needed to overflow.
+    with pytest.raises(ValueError):
+        validate_send_request(to=["b@x.y"], cc=[], bcc=[], subject="s",
+                              text="é" * (BODY_LIMIT_BYTES // 2 + 1), html=None)
+
+def test_send_sent_append_failure_still_202(monkeypatch):
+    # The Sent copy is best-effort: a failing IMAP append must never fail an
+    # already-submitted message (booby-trap pins the resilience).
+    class Booby(FakeSession):
+        def append(self, folder, raw): raise Exception("imap exploded")
+    c = make_client(monkeypatch)
+    sr.MailSession = Booby            # same global-patch seam as make_client
+    resp = c.post("/send", headers=auth(),
+                  json={"to": ["bob@sovereign.mail"], "subject": "Y", "text": "hi"})
+    assert resp.status_code == 202 and "message_id" in resp.json()

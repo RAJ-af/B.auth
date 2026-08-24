@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        # Defense-in-depth (never-import-app-on-host rule): if Settings is ever
+        # constructed where a repo .env gets discovered, extra="forbid" would turn
+        # every unrelated secret-bearing line into a ValidationError dump. Ignore
+        # unknown keys instead; this complements the ban, it does not replace it.
+        extra = "ignore"
 
 @lru_cache
 def get_settings() -> Settings:

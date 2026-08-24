@@ -8,7 +8,8 @@ MAX_PAGE = 100
 @router.get("/emails")
 def list_emails(request: Request, user: dict = Depends(get_current_user),
                 folder: str = "INBOX",
-                limit: int = Query(50, le=MAX_PAGE), offset: int = Query(0, ge=0)):
+                limit: int = Query(50, le=MAX_PAGE, ge=0),
+                offset: int = Query(0, ge=0)):
     if folder not in FOLDER_ALLOWLIST:
         raise HTTPException(422, f"folder must be one of {sorted(FOLDER_ALLOWLIST)}")
     try:

@@ -21,6 +21,10 @@ def test_sanitize_query_strips_quotes():
     # CR/LF stripped too: a TEXT query can never inject protocol lines (D4 ride-along).
     assert sanitize_query("foo\r\nbar") == "foobar"
 
+def test_sanitize_query_strips_backslash_and_nul():
+    assert sanitize_query("x\\") == "x"     # trailing backslash can't escape the quote
+    assert sanitize_query("a\x00b") == "ab"  # NUL never reaches the wire
+
 # Single plain-bytes line, exactly as imaplib returns for a summary FETCH with
 # no literal (the trailing ')' closes the FETCH paren-list on the same line).
 ENVELOPE_FETCH = (
@@ -63,6 +67,40 @@ def test_parse_envelope_response_tolerates_mixed_entries():
     assert row["date"] is None   # NIL date stays None
     assert row["seen"] is False
     assert row["size"] == 10
+
+def test_parse_envelope_response_flag_named_envelope_does_not_shadow():
+    # A custom flag atom literally named ENVELOPE must not be taken for the
+    # structure: the search is anchored on b"ENVELOPE (" so this row parses
+    # instead of being silently dropped.
+    shadowed = (
+        b"OK",
+        [b'5 (UID 11 FLAGS (\\Seen ENVELOPE) RFC822.SIZE 42 INTERNALDATE '
+         b'"24-Aug-2026 10:00:00 +0000" ENVELOPE (NIL "S" ((NIL NIL "a" "b.c")) '
+         b'NIL NIL ((NIL NIL "d" "e.f")) NIL NIL NIL NIL))'],
+    )
+    rows = parse_envelope_response(shadowed)
+    assert len(rows) == 1 and rows[0]["subject"] == "S"
+
+def test_parse_envelope_response_envelope_nil_skips_row():
+    nil_env = (
+        b"OK",
+        [b'6 (UID 12 FLAGS () RFC822.SIZE 9 INTERNALDATE '
+         b'"24-Aug-2026 10:00:00 +0000" ENVELOPE NIL)'],
+    )
+    assert parse_envelope_response(nil_env) == []
+
+def test_seen_flag_restricted_to_flags_slice():
+    # Subject text "C:\Seen" arrives as the IMAP-escaped quoted string
+    # "C:\\Seen"; with an empty FLAGS slice the message must read UNSEEN even
+    # though the byte sequence \Seen appears elsewhere on the meta line.
+    tricky = (
+        b"OK",
+        [b'8 (UID 13 FLAGS () RFC822.SIZE 64 INTERNALDATE '
+         b'"24-Aug-2026 10:00:00 +0000" ENVELOPE (NIL "C:\\\\Seen" '
+         b'((NIL NIL "a" "b.c")) NIL NIL NIL NIL NIL))'],
+    )
+    row = parse_envelope_response(tricky)[0]
+    assert row["seen"] is False and row["subject"] == "C:\\Seen"
 
 FULL_MSG = (
     b"OK",

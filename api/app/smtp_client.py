@@ -16,6 +16,10 @@ from .imap_client import DownstreamError
 
 RECIPIENT_LIMIT = 50
 BODY_LIMIT_BYTES = 10 * 1024 * 1024
+# Header-injection surface: a recipient carrying CR/LF smuggles protocol lines,
+# a comma would silently split into extra envelope recipients when joined into
+# the To/Cc header, and angle brackets can spoof the display-address form.
+FORBIDDEN_RCPT_CHARS = ("\r", "\n", ",", "<", ">")
 
 def build_mime(from_: str, to: list[str], cc: list[str], bcc: list[str],
                subject: str, text: str, html: str | None) -> EmailMessage:
@@ -35,12 +39,18 @@ def build_mime(from_: str, to: list[str], cc: list[str], bcc: list[str],
 
 def validate_send_request(*, to: list[str], cc: list[str], bcc: list[str],
                           subject: str, text: str, html: str | None) -> None:
+    for r in (*to, *cc, *bcc):
+        if any(ch in r for ch in FORBIDDEN_RCPT_CHARS):
+            raise ValueError(
+                f"invalid recipient {r!r}: CR/LF, comma and angle brackets "
+                "are not allowed")
     rcpt_total = len([r for r in (*to, *cc, *bcc) if r])
     if rcpt_total == 0:
         raise ValueError("at least one recipient required")
     if rcpt_total > RECIPIENT_LIMIT:
         raise ValueError(f"more than {RECIPIENT_LIMIT} recipients")
-    if len(text) + len(html or "") > BODY_LIMIT_BYTES:
+    # Byte count, not char count — the limit is what goes on the wire (UTF-8).
+    if len(text.encode()) + len((html or "").encode()) > BODY_LIMIT_BYTES:
         raise ValueError("body too large")
 
 def submit_message(msg: EmailMessage, envelope_rcpts: list[str]) -> None:

@@ -51,6 +51,53 @@ def test_downstream_maps_502():
         def list(self, *a, **k): raise im.DownstreamError("imap down")
     assert make_client(Boom).get("/emails", headers=auth()).status_code == 502
 
+def test_read_downstream_maps_502_not_404():
+    # A DownstreamError on read must stay 502-shaped: only the genuine
+    # "message not found" text earns the 404 mapping.
+    class Boom(FakeSession):
+        def read(self, uid, folder="INBOX"): raise im.DownstreamError("imap down")
+    r = make_client(Boom).get("/emails/7", headers=auth())
+    assert r.status_code == 502 and "not found" not in r.text
+
+def test_raw_imaplib_error_wrapped_to_502():
+    # End-to-end through the router with the REAL MailSession (source-level
+    # imap_call wrap) over a conn that dies mid-session: the imaplib error must
+    # come out as a DownstreamError -> 502, never a bare 500.
+    class DeadConn:
+        def select(self, *a, **k): raise im.imaplib.IMAP4.error("BAD protocol error")
+    class RealSessionStub:
+        def __init__(self, username, token):
+            inner = im.MailSession.__new__(im.MailSession)   # skip connect/__init__
+            inner.username, inner.token = username, token
+            inner.conn = DeadConn()
+            self.inner = inner
+        def __enter__(self): return self.inner
+        def __exit__(self, *a): return False
+    er.MailSession = RealSessionStub
+    app = create_app()
+    def fake_user(request: Request):
+        request.state.raw_token = "faketoken"
+        return {"sub": "s", "email": "bob@sovereign.mail"}
+    app.dependency_overrides[get_current_user] = fake_user
+    r = TestClient(app).get("/emails", headers=auth())
+    assert r.status_code == 502
+    assert "imap select failed" in r.text and "BAD protocol error" in r.text
+
+def test_read_bad_folder_maps_422():
+    r = make_client(FakeSession).get(
+        "/emails/7", params={"folder": "evil"}, headers=auth())
+    assert r.status_code == 422
+
+def test_search_bad_folder_maps_422():
+    r = make_client(FakeSession).get(
+        "/search", params={"q": "x", "folder": "evil"}, headers=auth())
+    assert r.status_code == 422
+
+def test_negative_limit_maps_422():
+    # ge=0 bound on limit (FakeSession ignores paging; this pins validation only).
+    r = make_client(FakeSession).get("/emails", params={"limit": -1}, headers=auth())
+    assert r.status_code == 422
+
 def test_search_requires_q():
     assert make_client(FakeSession).get("/search", headers=auth()).status_code == 400
 

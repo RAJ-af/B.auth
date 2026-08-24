@@ -20,6 +20,7 @@ import base64
 import email
 import imaplib
 import logging
+import re
 import ssl
 from email.header import decode_header, make_header
 
@@ -37,10 +38,25 @@ def xoauth2_string(username: str, access_token: str) -> bytes:
     raw = f"user={username}\x01auth=Bearer {access_token}\x01\x01".encode()
     return base64.b64encode(raw)
 
+def imap_call(op: str, fn, *args, **kwargs):
+    """Run one imaplib operation, mapping imaplib errors to DownstreamError.
+
+    Protocol-level failures mid-session (BAD/BYE responses, dropped connections)
+    surface as imaplib.IMAP4.error; unwrapped they'd escape a router as a bare
+    500. Routers already map DownstreamError -> 502. __enter__ keeps its own
+    generic connect/auth wrap; this covers every conn call outside it.
+    (IMAP4.error, not the module-level alias: the alias was removed in py3.14.)"""
+    try:
+        return fn(*args, **kwargs)
+    except imaplib.IMAP4.error as e:
+        raise DownstreamError(f"imap {op} failed: {e}") from e
+
 def sanitize_query(q: str) -> str:
     # Strip quotes and semicolons plus CR/LF so a TEXT search can neither break out
-    # of the quoted SEARCH key nor inject protocol lines (test is the contract).
-    for ch in ('"', ";", "\r", "\n"):
+    # of the quoted SEARCH key nor inject protocol lines. Backslash goes too: a
+    # trailing backslash escapes the closing quote server-side and corrupts/breaks
+    # the SEARCH parse; NUL is illegal in IMAP protocol text (test is the contract).
+    for ch in ('"', ";", "\r", "\n", "\\", "\x00"):
         q = q.replace(ch, "")
     return q.strip()
 
@@ -117,17 +133,27 @@ def _tokenize_imap_parens(data: bytes, pos: int = 0) -> tuple[list, int]:
                 out.append(atom.decode("utf-8", "replace"))
 
 def _envelope_from_meta(meta: bytes) -> list | None:
-    """Locate and tokenize the ENVELOPE structure in a FETCH meta line."""
-    i = meta.find(b"ENVELOPE ")
+    """Locate and tokenize the ENVELOPE structure in a FETCH meta line.
+
+    Anchored on b"ENVELOPE (" rather than the bare atom: searching for
+    "ENVELOPE " can first match a custom message flag literally named ENVELOPE
+    (rendered inside 'FLAGS (...)' ahead of the real structure), which made every
+    row of that mailbox parse as no-envelope and silently drop. With the paren
+    anchor a flag atom cannot shadow it, and ENVELOPE NIL falls out naturally as
+    not-found -> None — same behavior as before."""
+    anchor = b"ENVELOPE ("
+    i = meta.find(anchor)
     if i < 0:
-        return None
-    j = i + len(b"ENVELOPE ")
-    while j < len(meta) and meta[j:j + 1] in b" \t":
-        j += 1
-    if meta[j:j + 1] != b"(":   # ENVELOPE NIL or a {n} literal we don't consume
-        return None
-    val, _ = _tokenize_imap_parens(meta, j)
+        return None   # ENVELOPE NIL or absent, or a {n} literal we don't consume
+    val, _ = _tokenize_imap_parens(meta, i + len(anchor) - 1)   # positioned at '('
     return val
+
+def _seen_from_meta(meta: bytes) -> bool:
+    r"""\\Seen counts only when it sits in the FLAGS slice. Scanning the whole
+    meta line false-positives on subject text like "C:\Seen", which arrives in
+    the ENVELOPE quoted string later on the same line."""
+    m = re.search(rb"FLAGS \(([^)]*)\)", meta)
+    return bool(m) and rb"\Seen" in m.group(1)
 
 def parse_envelope_response(fetch_result) -> list[MessageSummary]:
     """Parse an imaplib FETCH result into MessageSummary rows.
@@ -158,7 +184,7 @@ def parse_envelope_response(fetch_result) -> list[MessageSummary]:
             from_=_addr_tuple_to_str(envelope[2]),
             to=_addr_list(envelope[5]),
             date=date or None,
-            seen=b"\\Seen" in meta,
+            seen=_seen_from_meta(meta),
             size=int(meta.split(b"RFC822.SIZE ")[1].split()[0]),
         ))
     return rows
@@ -197,12 +223,12 @@ class MailSession:
             ctx = ssl.create_default_context(cafile=get_settings().ca_cert_path)
             self.conn = imaplib.IMAP4(self.host, self.port)
             self.conn.starttls(ssl_context=ctx)
-            # imaplib.authenticate on current CPython (>=3.12 point releases, incl.
-            # this container's 3.12.14) BASE64-ENCODES the authobject result itself
-            # ("will be base64 encoded and sent" per its docstring; verified on the
-            # wire: returning xoauth2_string() here went out double-encoded and
-            # dovecot logged 'Username or token missing'). Hand it RAW bytes;
-            # xoauth2_string remains the module's public b64 helper (tested).
+            # imaplib.authenticate on current CPython BASE64-ENCODES the
+            # authobject result itself (it has since py3.8 — "will be base64
+            # encoded and sent" per its docstring; verified on the wire: returning
+            # xoauth2_string() here went out double-encoded and dovecot logged
+            # 'Username or token missing'). Hand it RAW bytes; xoauth2_string
+            # remains the module's public b64 helper (tested).
             typ, _ = self.conn.authenticate(
                 "XOAUTH2",
                 lambda _: base64.b64decode(xoauth2_string(self.username, self.token)))
@@ -224,54 +250,58 @@ class MailSession:
     def list(self, folder: str = "INBOX", limit: int = PAGE_DEFAULT_LIMIT,
              offset: int = 0) -> tuple[int, list[MessageSummary]]:
         self._folder(folder)
-        typ, data = self.conn.select(folder, readonly=True)
+        typ, data = imap_call("select", self.conn.select, folder, readonly=True)
         if typ != "OK": raise DownstreamError(f"cannot select {folder}")
-        typ, uids = self.conn.uid("SEARCH", None, "ALL")
+        typ, uids = imap_call("uid search", self.conn.uid, "SEARCH", None, "ALL")
         all_uids = uids[0].split() if uids and uids[0] else []
         total = len(all_uids)
         page = list(reversed(all_uids))[offset:offset + limit]   # newest first
         if not page: return total, []
         fetch_set = ",".join(u.decode() for u in page)
-        typ, fetched = self.conn.uid("FETCH", fetch_set,
-                                     "(FLAGS UID RFC822.SIZE INTERNALDATE ENVELOPE)")
+        typ, fetched = imap_call("uid fetch", self.conn.uid, "FETCH", fetch_set,
+                                 "(FLAGS UID RFC822.SIZE INTERNALDATE ENVELOPE)")
         if typ != "OK": raise DownstreamError("fetch failed")
         rows = {r["uid"]: r for r in parse_envelope_response((typ, fetched))}
         return total, [rows[u] for u in sorted((int(x) for x in page)) if u in rows]
 
     def read(self, uid: int, folder: str = "INBOX") -> ParsedMessage:
         self._folder(folder)
-        self.conn.select(folder)
-        typ, fetched = self.conn.uid("FETCH", str(uid),
-                                     "(FLAGS UID RFC822.SIZE INTERNALDATE ENVELOPE BODY.PEEK[])")
+        imap_call("select", self.conn.select, folder)
+        typ, fetched = imap_call("uid fetch", self.conn.uid, "FETCH", str(uid),
+                                 "(FLAGS UID RFC822.SIZE INTERNALDATE ENVELOPE BODY.PEEK[])")
         if typ != "OK" or not fetched or not isinstance(fetched[0], tuple):
             raise DownstreamError(f"message {uid} not found")
         meta, raw = fetched[0][0], fetched[0][1]
         summaries = parse_envelope_response((typ, [(meta, None)]))
         summary = summaries[0] if summaries else MessageSummary(
             uid=uid, subject="", from_=None, to=[], date=None, seen=False, size=len(raw))
-        self.conn.uid("STORE", str(uid), "+FLAGS", "(\\Seen)")   # read marks seen
+        # read marks seen
+        imap_call("uid store", self.conn.uid, "STORE", str(uid), "+FLAGS", "(\\Seen)")
         return parse_full_message(raw, summary)
 
     def search_text(self, folder: str, query: str) -> tuple[int, list[MessageSummary]]:
         self._folder(folder)
-        self.conn.select(folder, readonly=True)
+        imap_call("select", self.conn.select, folder, readonly=True)
         q = sanitize_query(query)
         if not q: return 0, []
-        typ, uids = self.conn.uid("SEARCH", None, "TEXT", f'"{q}"')
+        typ, uids = imap_call("uid search", self.conn.uid, "SEARCH", None,
+                              "TEXT", f'"{q}"')
         found = uids[0].split() if uids and uids[0] else []
         total = len(found)
         page = list(reversed(found))[:PAGE_DEFAULT_LIMIT]
         if not page: return total, []
-        typ, fetched = self.conn.uid("FETCH", ",".join(u.decode() for u in page),
-                                     "(FLAGS UID RFC822.SIZE INTERNALDATE ENVELOPE)")
+        typ, fetched = imap_call("uid fetch", self.conn.uid, "FETCH",
+                                 ",".join(u.decode() for u in page),
+                                 "(FLAGS UID RFC822.SIZE INTERNALDATE ENVELOPE)")
         rows = {r["uid"]: r for r in parse_envelope_response((typ, fetched))}
         return total, [rows[u] for u in sorted(int(x) for x in page) if u in rows]
 
     def append(self, folder: str, rfc822_bytes: bytes) -> None:
-        try:
-            self.conn.create(folder)
+        try:                       # Sent may not exist yet; create is best-effort
+            imap_call("create", self.conn.create, folder)
         except Exception: pass
-        typ, _ = self.conn.append(f'"{folder}"', "", None, rfc822_bytes)
+        typ, _ = imap_call("append", self.conn.append, f'"{folder}"', "", None,
+                           rfc822_bytes)
         if typ != "OK": raise DownstreamError(f"append to {folder} failed")
 
 async def run_sync(fn, *args):

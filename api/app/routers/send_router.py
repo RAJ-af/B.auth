@@ -31,10 +31,13 @@ def send(body: SendBody, request: Request, user: dict = Depends(get_current_user
     try:
         validate_send_request(to=body.to, cc=body.cc, bcc=body.bcc,
                               subject=body.subject, text=body.text, html=body.html)
+        # build_mime stays inside this handler too: headerregistry raises
+        # ValueError on malformed header values (e.g. a CRLF subject), which must
+        # surface as 422 — outside the try it would escape as a bare 500.
+        msg = build_mime(user["email"], body.to, body.cc, body.bcc,
+                         body.subject, body.text or "", body.html)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    msg = build_mime(user["email"], body.to, body.cc, body.bcc,
-                     body.subject, body.text or "", body.html)
     enforce_sender(msg, user["email"])           # From := claim, spoof impossible
     recipients = [*body.to, *body.cc, *body.bcc]
     try:
