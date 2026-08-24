@@ -7,6 +7,11 @@ Run from the repo root (reads .env from CWD):
 Covers: alice browserless PKCE+TOTP login -> POST /send -> bob list / read /
 search. DKIM + Sent-copy Maildir grepping stays in scripts/smoke-test.sh; this
 script is purely API-path.
+
+Note on TOTP enrollment: the browserless login auto-fires Keycloak's
+Configure-OTP required action ONLY when a credential is absent (kc_browserless_login
+posts our known TEST_TOTP_SECRET_* into the enrollment form). Both test users have
+been enrolled since the U2-gate proof, so routine runs just answer the otp prompt.
 """
 import json, os, sys, time, urllib.error, urllib.request
 
@@ -64,7 +69,7 @@ def step(name, fn):
 
 alice = step("alice login",
              lambda: get_tokens(env("TEST_USER_ALICE"), env("TEST_TOTP_SECRET_ALICE")))
-bob = step("bob login (first-run TOTP enrollment expected)",
+bob = step("bob login",
            lambda: get_tokens(env("TEST_USER_BOB"), env("TEST_TOTP_SECRET_BOB")))
 step("alice /me", lambda: api("GET", "/me", alice["access_token"]))
 mid = step("alice sends", lambda: api("POST", "/send", alice["access_token"], {
@@ -81,4 +86,9 @@ assert "integration hello" in (full["text_body"] or ""), \
 found = step("bob searches", lambda: api("GET", "/search?q=live-check", bob["access_token"]))
 assert found["total"] >= 1 and any(m["uid"] == target["uid"] for m in found["messages"]), \
     f"uid {target['uid']} not among search hits for 'live-check'"
-step("done", lambda: print(f"LIVE CHECK OK (subject={SUBJECT} message_id={mid})", flush=True))
+# Final ordering (T15): the trailing PASS prints BEFORE the summary line, so the
+# last line of a green run is LIVE CHECK OK and success greps anchor on it.
+# step() semantics are untouched for every other step; this is the one
+# deliberate special case.
+print("PASS done", flush=True)
+print(f"LIVE CHECK OK (subject={SUBJECT} message_id={mid})", flush=True)
