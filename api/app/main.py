@@ -12,6 +12,9 @@ def create_app() -> FastAPI:
     def healthz():
         return {"status": "ok"}
 
+    from app.routers import auth_router
+    app.include_router(auth_router.router)
+
     return app
 
 app = create_app()
