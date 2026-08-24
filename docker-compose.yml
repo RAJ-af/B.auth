@@ -76,6 +76,24 @@ services:
     networks: [mailnet]
     ports:
       - "127.0.0.1:1143:143"
+  postfix:
+    build: mail/postfix
+    depends_on:
+      # Task 6 adds: rspamd: {condition: service_started}
+      dovecot: {condition: service_started}
+      cert-init: {condition: service_completed_successfully}
+    environment:
+      MAIL_DOMAIN: ${MAIL_DOMAIN}
+      COMPOSE_SUBNET: ${COMPOSE_SUBNET}
+    volumes: [certs:/certs:ro]
+    networks: [mailnet]
+    ports:
+      - "127.0.0.1:25:25"
+  mailpit:
+    image: axllent/mailpit:v1.22
+    networks: [mailnet]
+    ports:
+      - "127.0.0.1:8025:8025"
 networks:
   mailnet:
     driver: bridge

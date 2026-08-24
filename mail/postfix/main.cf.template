@@ -1,0 +1,27 @@
+myhostname = mail.sovereign.mail
+myorigin = ${MAIL_DOMAIN}
+mydestination = localhost
+inet_interfaces = all
+smtpd_banner = $myhostname ESMTP
+compatibility_level = 3.6
+
+virtual_mailbox_domains = ${MAIL_DOMAIN}
+virtual_transport = lmtp:[dovecot]:24
+
+relayhost = [mailpit]:1025
+
+# Task 6 restores: smtpd_milters = inet:rspamd:11332
+# (rspamd service does not exist until Task 6; pointing at it now would tempfail
+# every message because milter_default_action = tempfail.)
+non_smtpd_milters =
+milter_default_action = tempfail
+milter_protocol = 6
+
+smtpd_tls_cert_file = /certs/server.crt
+smtpd_tls_key_file = /certs/server.key
+smtpd_tls_security_level = may
+smtp_tls_security_level = may
+
+biff = no
+append_dot_mydomain = no
+readme_directory = no
