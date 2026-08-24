@@ -94,6 +94,23 @@ services:
     networks: [mailnet]
     ports:
       - "127.0.0.1:8025:8025"
+  api:
+    build: api
+    depends_on:
+      keycloak: {condition: service_healthy}
+      dovecot: {condition: service_started}
+      postfix: {condition: service_started}
+      cert-init: {condition: service_completed_successfully}
+    environment:
+      KEYCLOAK_BASE_URL: http://keycloak:8080
+      KC_REALM: ${KC_REALM}
+      KC_APP_CLIENT: ${KC_APP_CLIENT}
+      API_AUDIENCE: ${API_AUDIENCE}
+      MAIL_DOMAIN: ${MAIL_DOMAIN}
+    volumes: [certs:/certs:ro]
+    networks: [mailnet]
+    ports:
+      - "127.0.0.1:${API_PORT}:8000"
   redis:
     image: redis:7-alpine
     networks: [mailnet]
