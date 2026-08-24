@@ -3,12 +3,12 @@
 # dovecot.conf). These keys are NOT dovecot.conf settings — putting them there dies
 # with "Unknown setting".
 #
-# Variant A (discovery): introspection endpoint + JWKS are read from Keycloak's
-# /.well-known/openid-configuration. Internal KC hop is plain HTTP under start-dev —
+# Variant B (explicit introspection): 2.3.x REQUIRES a concrete introspection_url at
+# auth-process init — openid_configuration_url alone dies with "Password grant,
+# tokeninfo, introspection URL or validation key dictionary must be given" even though
+# the discovery document is fetchable. Internal KC hop is plain HTTP under start-dev —
 # recorded trade-off #2.
-# Variant B (fallback if A fails): replace the discovery line below with
-#   introspection_url = http://keycloak:8080/realms/sovereign/protocol/openid-connect/token/introspect
-openid_configuration_url = http://keycloak:8080/realms/sovereign/.well-known/openid-configuration
+introspection_url = http://keycloak:8080/realms/sovereign/protocol/openid-connect/token/introspect
 client_id = mail-introspection
 client_secret = __KC_INTROSPECTION_SECRET__
 username_attribute = preferred_username
