@@ -25,3 +25,8 @@ smtp_tls_security_level = may
 biff = no
 append_dot_mydomain = no
 readme_directory = no
+
+# Log to stderr so `docker compose logs postfix` captures delivery and TLS
+# errors (there is no syslog daemon in this image). Same rationale as the
+# dovecot log_path setting.
+maillog_file = /dev/stderr
