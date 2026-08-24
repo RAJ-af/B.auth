@@ -28,5 +28,9 @@ readme_directory = no
 
 # Log to stderr so `docker compose logs postfix` captures delivery and TLS
 # errors (there is no syslog daemon in this image). Same rationale as the
-# dovecot log_path setting.
+# dovecot log_path setting. Postfix >=3.4 routes ALL CLI/daemon diagnostics
+# through this channel -- without it they vanish into the syslog void.
 maillog_file = /dev/stderr
+# Postfix 3.7 only accepts maillog_file paths under whitelisted prefixes;
+# the packaged default list excludes /dev.
+maillog_file_prefixes = /dev, /var
