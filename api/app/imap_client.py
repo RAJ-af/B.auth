@@ -197,7 +197,15 @@ class MailSession:
             ctx = ssl.create_default_context(cafile=get_settings().ca_cert_path)
             self.conn = imaplib.IMAP4(self.host, self.port)
             self.conn.starttls(ssl_context=ctx)
-            typ, _ = self.conn.authenticate("XOAUTH2", lambda _: xoauth2_string(self.username, self.token))
+            # imaplib.authenticate on current CPython (>=3.12 point releases, incl.
+            # this container's 3.12.14) BASE64-ENCODES the authobject result itself
+            # ("will be base64 encoded and sent" per its docstring; verified on the
+            # wire: returning xoauth2_string() here went out double-encoded and
+            # dovecot logged 'Username or token missing'). Hand it RAW bytes;
+            # xoauth2_string remains the module's public b64 helper (tested).
+            typ, _ = self.conn.authenticate(
+                "XOAUTH2",
+                lambda _: base64.b64decode(xoauth2_string(self.username, self.token)))
             if typ != "OK": raise DownstreamError(f"imap auth failed: {typ}")
         except DownstreamError: raise
         except Exception as e:
