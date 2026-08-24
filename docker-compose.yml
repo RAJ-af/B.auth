@@ -98,9 +98,10 @@ services:
     image: redis:7-alpine
     networks: [mailnet]
   rspamd:
-    # healthcheck note: rspamd/rspamd:3.9 ships no nc/socat; the probe runs a
-    # real scan through the proxy worker with rspamc instead (gates on the
-    # milter protocol on 11332, not just a TCP connect).
+    # healthcheck note: rspamd/rspamd:3.9 ships no nc/socat, and its proxy
+    # worker rejects rspamc's HTTP POST on the milter socket ("HTTP POST
+    # request is not supported in milter mode"), so the probe is a plain TCP
+    # connect gate on 11332 via bash /dev/tcp.
     image: rspamd/rspamd:3.9
     hostname: rspamd
     volumes:
@@ -109,7 +110,7 @@ services:
       - ./config/rspamd/local.d:/etc/rspamd/local.d:ro
     networks: [mailnet]
     healthcheck:
-      test: ["CMD-SHELL", "echo 'Subject: healthcheck' | rspamc -h localhost:11332 >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/11332'"]
       interval: 10s
       timeout: 5s
       retries: 12
