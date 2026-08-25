@@ -17,6 +17,7 @@ from .. import keycloak as kc
 from ..auth import get_verifier
 from ..config import get_settings
 from ..services import idverify as idv
+from ..services import recovery as rc
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -209,4 +210,14 @@ def api_approve(review_id: int, claims: dict = Depends(require_admin)):
     """Scripted-approval path used by smoke-test; HTML flow stays CSRF-guarded."""
     if not idv.decide_review(review_id, "approved", claims["email"]):
         raise HTTPException(404, "no pending review with that id")
+    return {"ok": True}
+
+
+@router.post("/api/recovery/{req_id}/grant")
+def api_recovery_grant(req_id: str, claims: dict = Depends(require_admin)):
+    """Bearer path granting a pending_admin recovery (spec §13); the dashboard
+    route lands with the service. Only actionable requests grant — anything
+    else is the same generic 404 (no state oracle for scripted probes)."""
+    if not rc.admin_grant(req_id, claims["email"]):
+        raise HTTPException(404, "no actionable recovery request with that id")
     return {"ok": True}
