@@ -272,7 +272,7 @@ Provider interface (exact contract, one Python module each):
 
 ```python
 send_otp(phone_number: str, code: str, channel: str) -> bool   # channel: sms | voice
-send_sms(phone_number: str, text: str) -> bool                 # notifications reuse this
+send_sms(phone_number: str, text: str) -> bool                 # OTP + recovery alerts ONLY (see below)
 ```
 
 - **console** (default): logs the code to container stdout BY DESIGN — dev/test/smoke
@@ -283,6 +283,10 @@ send_sms(phone_number: str, text: str) -> bool                 # notifications r
 - **Government swap:** domestic SMSC = one new module implementing the two
   functions; nothing else changes. Sender-ID/DLT registration documented as the
   operator's responsibility.
+- **Channel routing:** SMS carries OTP codes and recovery-attempt alerts ONLY.
+  Family-link lifecycle notifications deliberately do NOT ride SMS — they are
+  delivered by this system's own mail stack into members' mailboxes (§12, §17),
+  which removes the SMS cost surface from the family flow entirely.
 - Codes: 6-digit crypto-random, TTL `OTP_CODE_TTL_SECONDS=300`, stored ONLY as
   SHA-256, single-use (`consumed_at`), ≤5 verify attempts per challenge.
 - Budgets (PG-backed): ≤`OTP_MAX_SENDS_PER_HOUR=3` sends/hour/phone, 60s resend
@@ -373,9 +377,21 @@ remain available to future tooling.
   an attacker who adds a link during temporary compromise gives the owner 48 hours
   to notice and revoke. Smoke overrides the env to 0 (documented; prod default 48).
 - Revoke: instant, either party, ANY time, no cooldown.
-- EVERY transition (requested / approved / revoked / expired) notifies ALL linked
-  members of BOTH accounts' link neighborhoods — in-app rows + SMS via §9 provider.
-  SMS text carries masked addresses (`R***@sovereign.mail`) and never codes.
+- Delivery channels: EVERY transition (requested / approved / revoked / expired)
+  notifies ALL linked members of BOTH accounts' link neighborhoods — in-app rows
+  PLUS an email delivered by THIS system's own mail stack into each member's
+  sovereign mailbox. Family notifications never touch the SMS provider: the mail
+  infrastructure is already ours to run, so this flow carries zero marginal
+  sender cost and no Twilio exposure.
+- **The notification email is a POINTER ONLY** — it must NEVER contain a clickable
+  approve/action link. Body shape: "You have a pending family-link request from
+  R***@sovereign.mail — open the app to review." Every approve/deny/revoke step
+  remains an authenticated in-app API call by the member. This is LOAD-BEARING for
+  the "nothing relayable exists" security property (§15.3): a forwarded or phished
+  email grants nothing.
+- Rate limit: ≤2 link requests per requester→target pair per rolling 24h window
+  (§17) — request-spam must not function as email harassment.
+- Texts carry masked addresses (`R***@sovereign.mail`) and never codes.
 
 ## 13. Recovery (#6, #7)
 
@@ -404,6 +420,16 @@ POST /recovery/set-password {request_id, new_password}
 POST /recovery/{request_id}/cancel          → authenticated owner session OR any
   linked member denies → cancelled (+ owner notified)
 ```
+
+**Family-window expiry (explicit):** if `pending_family` elapses its full window
+with no member approval, the request flips to `expired` on read and recovery
+requires a fresh `/recovery/start` — consuming attempt budget like any other
+restart. There is **NO automatic fallback to device-dwell**, even when the request
+carried a recognized device: a deliberate MVP simplicity choice, not an oversight.
+Rationale: real-time family coordination is expected (the requester tells the
+member out-of-band to go approve), so the window is normally sufficient;
+automatic dwell-fallback is deferred as a Phase-2 UX improvement should this prove
+too rigid in practice (register #13).
 
 Dwell rules (the stolen-phone case delivers BOTH factors at once — SIM inside =
 OTP, app storage = device token):
@@ -473,7 +499,17 @@ neither is ever sufficient alone** (#7 satisfied literally).
   disclose address-existence via 409 — accepted UX trade-off for signup forms,
   noted here deliberately.
 - **OTP relay/social-engineering (#6):** family approval has NO relayable artifact;
-  approvals are authenticated calls by the target account.
+  approvals are authenticated calls by the target account. Family notification
+  emails are pointers only — no action links (§12), so forwarding one grants
+  nothing.
+- **Guardian-phone SIM-swap cascade:** dependents resolve purely by
+  `guardian_phone == account phone` matching, and phone numbers are deliberately
+  non-unique — so a SIM swap against a GUARDIAN's number risks more than that
+  guardian's own recovery: it grants the attacker guardian-level access
+  (`GET /account/dependents` and downstream guardian actions) to EVERY dependent
+  account linked to that number. **Currently UNMITIGATED at MVP** — stated
+  honestly rather than patched inline; candidate directions are collected as
+  register #14 as a design question, not a committed solution.
 - **Cost-abuse:** per-phone/per-account budgets consumed only on provider success.
 
 ## 16. Configuration Surface (.env additions)
@@ -516,6 +552,7 @@ api compose service additionally receives `LDAP_ADMIN_PASSWORD` (see §15.1).
 | Signup sessions | 15-min TTL, single completion | session hygiene |
 | Recovery starts/account | 3/hour | dwell-clock restart abuse |
 | Family-link requests | expire unapproved at 10 min | notification spam |
+| Family-link requests per requester→target pair | 2 per rolling 24h | email-harassment prevention |
 
 ## 18. Error Handling
 
@@ -604,8 +641,19 @@ with adversarial review per wave, deviations D-numbered in the ledger.
 10. Password hash scheme investigation ({ARGON2}/{CRYPT} variants under OpenLDAP)
     vs required SSHA-for-bind constraint.
 11. WebAuthn/passkeys as recovery/login factors — would obsolete the dwell
-    trade-off and device-token fragility.
+    trade-off and device-token fragility. Also covers optional biometric/passkey
+    binding on the FAMILY-APPROVER's device: a stronger factor for the approve
+    action than a bare in-app button tap.
 12. Postgres TLS + per-service network policies — VPS-phase hardening sweep.
+13. Auto-fallback of expired family-approval windows to device-dwell — deferred
+    UX question (§13); revisit only if out-of-band coordination proves too rigid
+    in practice.
+14. Guardian-phone compromise cascade — DESIGN QUESTION, not a committed fix:
+    candidate directions include periodic guardian identity re-verification,
+    alerting dependent-account notification trails on guardian phone/context
+    changes, or requiring secondary confirmation before a dependents-list query
+    following a recent phone/account change. Needs threat-model work before
+    anything is chosen (§15.3).
 
 ## 22. Deliverables & Repo Layout Delta
 
