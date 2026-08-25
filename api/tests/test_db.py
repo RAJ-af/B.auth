@@ -1,8 +1,8 @@
-"""DSN builder pins (live connectivity is a codespace wave gate, not local)."""
-from app.db import dsn
+"""conn_kwargs builder pins (live connectivity is a codespace wave gate, not local)."""
+from app.db import conn_kwargs
 
 
-def test_dsn_contains_all_components(monkeypatch):
+def test_conn_kwargs_contains_all_components(monkeypatch):
     import app.config as cfg
     monkeypatch.setattr(cfg.get_settings, "cache_clear", lambda: None)
     s = cfg.get_settings.__wrapped__() if hasattr(cfg.get_settings, "__wrapped__") else cfg.get_settings()
@@ -14,6 +14,6 @@ def test_dsn_contains_all_components(monkeypatch):
     import importlib
     from app import db
     importlib.reload(db)
-    d = db.dsn()
-    assert "host=pg.test" in d and "port=6543" in d and "dbname=sovereign_app" in d
-    assert "user=u" in d and "password=p" in d
+    k = db.conn_kwargs()
+    assert k["host"] == "pg.test" and k["port"] == 6543
+    assert k["dbname"] == "sovereign_app" and k["user"] == "u" and k["password"] == "p"

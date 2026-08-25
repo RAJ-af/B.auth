@@ -13,16 +13,16 @@ from psycopg.rows import dict_row
 from .config import get_settings
 
 
-def dsn() -> str:
+def conn_kwargs() -> dict:
     s = get_settings()
-    return (f"host={s.postgres_host} port={s.postgres_port} "
-            f"dbname={s.sovereign_app_db} user={s.postgres_user} "
-            f"password={s.postgres_password}")
+    return {"host": s.postgres_host, "port": s.postgres_port,
+            "dbname": s.sovereign_app_db, "user": s.postgres_user,
+            "password": s.postgres_password}
 
 
 @contextmanager
 def tx():
-    conn = psycopg.connect(dsn(), row_factory=dict_row)
+    conn = psycopg.connect(**conn_kwargs(), row_factory=dict_row)
     try:
         with conn:                       # commits on success, rolls back on error
             yield conn
