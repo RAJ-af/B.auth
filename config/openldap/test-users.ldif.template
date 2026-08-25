@@ -17,3 +17,11 @@ sn: Example
 displayName: Bob
 mail: __BOB__
 userPassword: __PASSWORD__
+
+dn: mail=__ADMIN__,ou=people,dc=__DOMAIN_RDN__
+objectClass: inetOrgPerson
+cn: Sovereign Admin
+sn: Admin
+displayName: Admin
+mail: __ADMIN__
+userPassword: __PASSWORD__

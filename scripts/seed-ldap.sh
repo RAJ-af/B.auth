@@ -20,6 +20,7 @@ EOF
 sed -e "s/__DOMAIN_RDN__/${RDN}/g" \
     -e "s/__ALICE__/${TEST_USER_ALICE}/g" \
     -e "s/__BOB__/${TEST_USER_BOB}/g" \
+    -e "s/__ADMIN__/${SOVEREIGN_ADMIN_USER}/g" \
     -e "s|__PASSWORD__|${TEST_USER_PASSWORD}|g" \
     config/openldap/test-users.ldif.template > /tmp/users.ldif
 # NOTE: ldapadd reads LDIF from stdin by default; "-f -" is not supported by
