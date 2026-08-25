@@ -796,8 +796,10 @@ def send_sms(phone_number: str, body: str) -> bool:
     auth = base64.b64encode(
         f"{s.twilio_account_sid}:{s.twilio_auth_token}".encode()).decode()
     try:
-        r = httpx.post(url, auth=("sid-placeholder-not-used", ""),
-                       headers={"Authorization": f"Basic {auth}"},
+        # T3-review correction (ledger 2026-08-25): httpx's auth_flow OVERWRITES a
+        # manual Authorization header, so the original manual-header + placeholder-
+        # BasicAuth combo never sent real credentials. Pass auth= directly.
+        r = httpx.post(url, auth=(s.twilio_account_sid, s.twilio_auth_token),
                        data={"To": phone_number, "From": s.twilio_from_number,
                              "Body": body}, timeout=15.0)
         return r.status_code < 300
@@ -939,6 +941,11 @@ def send_challenge(phone: str, purpose: str, channel: str = "sms") -> None:
 def verify_challenge(phone: str, purpose: str, code: str) -> bool:
     now = time.time()
     ch = _latest_active(phone, purpose, now)
+    # T3-review correction (ledger 2026-08-25): no active row (unknown phone/
+    # purpose, or challenge outside the query window) must be a generic False,
+    # not a 'NoneType' subscriptable crash at the burn UPDATE below.
+    if ch is None:
+        return False
     try:
         check_code(ch and ch["code_sha256"], ch and ch["attempts_left"],
                    ch and ch["expires_at_ts"], bool(ch and ch["consumed"]),
