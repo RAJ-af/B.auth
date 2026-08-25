@@ -1,13 +1,16 @@
 """Recovery: friction everywhere, silence outward (spec §13, §15.3).
 
-Service-level suite. The fixture swaps the storage seams (_load_active trio,
-device seam, OTP/notify/LDAP edges) and freezes time at rc.time (the shared
-time module), so every timing rule is exercised by advancing one clock.
+Service-level suite plus an HTTP-layer pin set: the fixture swaps the storage
+seams (_load_active trio, device seam, OTP/notify/LDAP edges) and freezes time
+at rc.time (the shared time module), so TestClient exercises REAL router code
+against faked storage and every wire shape is pinned byte-for-byte.
 """
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.main import create_app
 from app.services import devices as dv
 from app.services import recovery as rc
 
@@ -162,8 +165,9 @@ def rc_min_dwell():
 
 
 def test_family_window_expiry_no_auto_dwell_fallback(w, monkeypatch):
-    """§13/register#13: even WITH a recognized device, an EXPIRED family window
-    stays dead — the user must start over and consume a fresh attempt."""
+    """§13.5: an EXPIRED family window flips expired lazily on next touch and
+    completes as invalid_request — the user must start over and consume a
+    fresh attempt. (Device-present variant pinned by its sibling below.)"""
     w["links"].append({"member_of": "alice@sovereign.mail"})
     raw = None
     out = rc.start_recovery("alice@sovereign.mail", raw)
@@ -175,6 +179,24 @@ def test_family_window_expiry_no_auto_dwell_fallback(w, monkeypatch):
     status, code = rc.maybe_complete("alice@sovereign.mail",
                                      "new-password-long", raw)
     assert (status, code) == ("invalid_request", 400)         # NOT a dwell path
+
+
+def test_expired_family_window_with_device_stays_dead(w, monkeypatch):
+    """Q3 pin: family outranks device at branch pick, and once the window is
+    EXPIRED the recognized device cannot revive it as dwell — no auto fallback
+    even when the SAME device presents at complete time."""
+    raw = "devrawFAM"
+    dev = {"device_hash": "f" * 64, "email": "alice@sovereign.mail"}
+    monkeypatch.setattr(dv, "resolve", lambda r: dev if r == raw else None)
+    w["links"].append({"member_of": "alice@sovereign.mail"})
+    out = rc.start_recovery("alice@sovereign.mail", raw)
+    rc.verify_otp("alice@sovereign.mail", "123456")
+    assert out["status"] == "pending_family"                  # family wins
+    w["advance"](ttl_seconds() + 1)
+    assert rc._refresh_state(out)["status"] == "expired"      # lazy flip
+    status, code = rc.maybe_complete("alice@sovereign.mail",
+                                     "new-password-long", raw)
+    assert (status, code) == ("invalid_request", 400)         # NOT revived as dwell
 
 
 def ttl_seconds():
@@ -272,3 +294,72 @@ def test_admin_grant_flips_pending_admin_to_authorized(w):
     # the granted path completes like family-approved ones do:
     assert rc.maybe_complete("alice@sovereign.mail",
                              "new-password-long", None) == ("completed", 201)
+
+
+# --- HTTP layer pins (§15.3 wire shapes; REAL router code, faked storage) ----
+
+def _jwt_client(email: str) -> TestClient:
+    """TestClient with get_current_user overridden to a fixed identity,
+    mirroring the real dependency contract (raw_token stash included). The
+    request arg MUST be annotated Request — FastAPI solves the override's
+    own signature, and an unannotated param becomes a required query field."""
+    from app.auth import get_current_user
+    from fastapi import Request
+
+    app = create_app()
+
+    def fake_user(request: Request):
+        request.state.raw_token = "faketoken"
+        return {"sub": "s", "email": email}
+    app.dependency_overrides[get_current_user] = fake_user
+    return TestClient(app)
+
+
+def test_http_start_known_and_unknown_byte_identical(w):
+    c = TestClient(create_app())
+    unknown = c.post("/recovery/start", json={"email": "nobody@sovereign.mail"})
+    known = c.post("/recovery/start", json={"email": "alice@sovereign.mail"})
+    assert unknown.status_code == known.status_code == 202
+    assert unknown.content == known.content == START_BODY
+
+
+def test_http_cancel_never_leaks_standing(w):
+    """Standing-oracle regression guard (R5): a non-standing JWT must see the
+    SAME 200 {"received":true} an owner would see — reintroducing any ok/404
+    split or error body fails here."""
+    out = rc.start_recovery("alice@sovereign.mail", None)
+    c = _jwt_client("mallory@sovereign.mail")
+    r = c.post("/recovery/cancel", json={"email": "alice@sovereign.mail"})
+    assert r.status_code == 200
+    assert r.content == START_BODY
+    assert out["status"] == "awaiting_phone"      # untouched server-side
+    # the request really was live: the owner can still cancel it afterwards
+    assert rc.cancel("alice@sovereign.mail", "alice@sovereign.mail") is True
+
+
+def test_http_wrong_otp_single_401_shape(w):
+    """One 401 body forever — regardless of attempt count or target email."""
+    c = TestClient(create_app())
+    rc.start_recovery("alice@sovereign.mail", None)
+    first = c.post("/recovery/verify-otp",
+                   json={"email": "alice@sovereign.mail", "code": "000000"})
+    again = c.post("/recovery/verify-otp",
+                   json={"email": "alice@sovereign.mail", "code": "111111"})
+    other = c.post("/recovery/verify-otp",
+                   json={"email": "mallory@sovereign.mail", "code": "222222"})
+    assert first.status_code == again.status_code == other.status_code == 401
+    assert first.content == again.content == other.content
+
+
+def test_http_short_password_422_before_service_touch(w, monkeypatch):
+    """password_min_length rejects at the router BEFORE the service runs —
+    a spy on maybe_complete must record zero calls even with a live request."""
+    seen: list[tuple] = []
+    monkeypatch.setattr(rc, "maybe_complete",
+                        lambda *a, **k: seen.append(a) or ("completed", 201))
+    rc.start_recovery("alice@sovereign.mail", None)   # live request waiting
+    c = TestClient(create_app())
+    r = c.post("/recovery/complete",
+               json={"email": "alice@sovereign.mail", "new_password": "short"})
+    assert r.status_code == 422
+    assert seen == []                             # service never touched
