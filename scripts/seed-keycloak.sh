@@ -30,13 +30,20 @@ $KCADM create clients -r "$KC_REALM" -f - <<JSON || $KCADM get "clients?clientId
    "config":{"included.client.audience":"${API_AUDIENCE}","access.token.claim":"true"}}]}
 JSON
 
-# Confidential introspection client: generate secret, persist to .env (gitignored)
+# Confidential introspection client: generate secret, persist to .env (gitignored).
+# Re-runs must UPDATE the existing client's secret (not skip) so .env stays in
+# sync with Keycloak — Wave B gate found the bare create aborted the whole seed
+# under set -e once the client existed.
 SECRET=$(openssl rand -hex 24)
 CID=$($KCADM create clients -r "$KC_REALM" -f - -i <<JSON
 {"clientId":"${KC_INTROSPECTION_CLIENT}","publicClient":false,"standardFlowEnabled":false,
  "directAccessGrantsEnabled":false,"secret":"${SECRET}"}
 JSON
-)
+) || {
+  CID=$($KCADM get "clients?clientId=${KC_INTROSPECTION_CLIENT}" -r "$KC_REALM" \
+    --fields id --format csv --noquotes | tail -1)
+  $KCADM update "clients/${CID}" -r "$KC_REALM" -s "secret=${SECRET}"
+}
 grep -q '^KC_INTROSPECTION_SECRET=' .env && \
   sed -i "s|^KC_INTROSPECTION_SECRET=.*|KC_INTROSPECTION_SECRET=${SECRET}|" .env || \
   echo "KC_INTROSPECTION_SECRET=${SECRET}" >> .env
@@ -86,8 +93,8 @@ $KCADM create roles -r "$KC_REALM" -s name=sovereign-admin \
 ADMIN_UID=$($KCADM get users -r "$KC_REALM" -q username="$SOVEREIGN_ADMIN_USER" \
   --fields id --format csv --noquotes | tail -1)
 if [ -n "${ADMIN_UID}" ] && [ "${ADMIN_UID}" != "id" ]; then
-  $KCADM add-roles -r "$KC_REALM" --uid "${ADMIN_UID}" --rolename sovereign-admin >/dev/null 2>&1 \
-    || echo "role mapping present or user pending first LDAP login"
+  $KCADM add-roles -r "$KC_REALM" --uid "${ADMIN_UID}" --rolename sovereign-admin >/dev/null \
+    || echo "WARN: role assignment failed"
 else
   echo "NOTE: ${SOVEREIGN_ADMIN_USER} not yet imported from LDAP; run this seed again after their first login"
 fi
