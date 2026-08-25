@@ -214,8 +214,8 @@ def complete(body: CompleteBody):
 
 
 def _run_identity_step(choice: dict, payload: dict) -> IdentityOutcome:
-    """Delegates to idverify.outcome_for_mode. This task ships with off-mode
-    handled there; AUTO/MANUAL dispatch completes in Task 7."""
+    """Task 6 lands off-mode; Task 7 completes AUTO/MANUAL. Never raises
+    user-facing 5xx: infra trouble becomes the soft-fallback union member."""
     from ..services.idverify import outcome_for_mode
     return outcome_for_mode(get_settings().idverify_mode, choice,
                             payload.get("email", ""))
