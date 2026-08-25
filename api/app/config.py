@@ -75,6 +75,34 @@ class Settings(BaseSettings):
         "http://localhost:8000/auth/callback", "http://localhost:*/*", "sovereign://callback"]
     ca_cert_path: str = "/certs/rootCA.pem"
 
+    # --- Identity & Auth Flow subsystem (spec 2026-08-25 §16) ---
+    postgres_host: str = "postgres"
+    postgres_port: int = 5432
+    postgres_user: str = ""
+    postgres_password: str = ""
+    sovereign_app_db: str = "sovereign_app"
+    otp_provider: str = "console"
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    otp_code_ttl_seconds: int = 300
+    otp_resend_cooldown_seconds: int = 60
+    otp_max_sends_per_hour: int = 3
+    otp_max_verify_attempts: int = 5
+    otp_daily_cap: int = 200
+    idverify_mode: str = "off"            # off | auto | manual
+    idverify_script: str = "/verify/mock-idverify.sh"
+    idverify_timeout_seconds: int = 20
+    family_link_cooldown_hours: int = 48
+    recovery_request_ttl_seconds: int = 600
+    recovery_min_dwell_seconds: int = 600
+    recovery_reset_session_ttl_seconds: int = 600
+    recovery_max_attempts_per_hour: int = 3
+    password_min_length: int = 12
+    sovereign_admin_user: str = "admin@sovereign.mail"
+    ldap_host: str = "openldap"
+    ldap_admin_password: str = ""         # lifecycle: spec §15.1 row 1
+
     class Config:
         env_file = ".env"
         # Defense-in-depth (never-import-app-on-host rule): if Settings is ever
