@@ -22,12 +22,14 @@ def create_app() -> FastAPI:
 
     from app.routers import auth_router, emails_router, send_router
     from app.routers import signup_router, admin_router, account_router
+    from app.routers import family_router
     app.include_router(auth_router.router)
     app.include_router(emails_router.router)
     app.include_router(send_router.router)
     app.include_router(signup_router.router)
     app.include_router(admin_router.router)
     app.include_router(account_router.router)
+    app.include_router(family_router.router)
 
     return app
 
