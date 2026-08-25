@@ -6,6 +6,12 @@ import os
 # imported because app.main calls get_settings() at import time (lru_cache).
 os.environ["MAIL_DOMAIN"] = "test.mail"
 
+# Smoke-time overrides (FAMILY_LINK_COOLDOWN_HOURS=0 etc.) live in the host
+# .env that live-run harnesses export; pin the suite to defaults so timing
+# assertions (48h cooldown) stay deterministic regardless of ambient env.
+os.environ["FAMILY_LINK_COOLDOWN_HOURS"] = "48"
+os.environ["RECOVERY_MIN_DWELL_SECONDS"] = "600"
+
 import pytest
 from fastapi.testclient import TestClient
 from app.main import create_app
