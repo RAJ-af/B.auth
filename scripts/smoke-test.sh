@@ -183,6 +183,27 @@ kc_token() {        # $1=username $2=password $3=totp-secret -> prints access to
 }
 SMOKE_PW="smoke-password-123"
 
+# --- 9-pre. idempotency: scrub smoke identities from earlier runs -------------
+# signup/start answers 409 for an existing email, so re-runs against a dirty
+# database must first remove carol/dave everywhere (children before the
+# accounts row; LDAP entries and Maildirs too — dovecot recreates on demand).
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$SOVEREIGN_APP_DB" -q <<SQL
+DELETE FROM recovery_requests WHERE email IN ('carol@sovereign.mail','dave@sovereign.mail');
+DELETE FROM family_links WHERE requester_email IN ('carol@sovereign.mail','dave@sovereign.mail')
+                          OR target_email    IN ('carol@sovereign.mail','dave@sovereign.mail');
+DELETE FROM devices WHERE email IN ('carol@sovereign.mail','dave@sovereign.mail');
+DELETE FROM verification_reviews WHERE email IN ('carol@sovereign.mail','dave@sovereign.mail');
+DELETE FROM notifications WHERE email IN ('carol@sovereign.mail','dave@sovereign.mail');
+DELETE FROM signup_sessions WHERE payload_json->>'email' IN ('carol@sovereign.mail','dave@sovereign.mail');
+DELETE FROM otp_challenges WHERE phone_e164 IN ('+918000000001','+918000000002');
+DELETE FROM accounts WHERE email IN ('carol@sovereign.mail','dave@sovereign.mail');
+SQL
+docker compose exec -T openldap sh -c \
+  'for u in carol dave; do ldapdelete -x -D "cn=admin,dc='"${DOMAIN//./,dc=}"'" \
+     -w "'"$LDAP_ROOT_PASSWORD"'" "mail=$u@'"$DOMAIN"',ou=people,dc='"${DOMAIN//./,dc=}"'" 2>/dev/null; done; true'
+docker compose exec -T dovecot sh -c \
+  'rm -rf /var/mail/vhosts/'"${DOMAIN}"'/carol /var/mail/vhosts/'"${DOMAIN}"'/dave 2>/dev/null; true'
+
 # --- 9a. signup, tier1 skip path (carol) --------------------------------------
 MARK=$(api_log_lines)
 curl -s -o /tmp/smoke-signup.json -w '%{http_code}' \
