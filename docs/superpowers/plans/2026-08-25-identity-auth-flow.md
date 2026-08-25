@@ -990,7 +990,7 @@ git commit -m "feat: pluggable otp providers + budget-aware challenge service"
   - `POST /signup/verify-otp` `{token, code}` → `200 {"stage":"awaiting_identity_choice","identity_options":[...],"tier":"tier1_phone"}` | `400 invalid/expired token` | `401 wrong code`
   - `POST /signup/complete` `{token, choice:{kind:"skip"}|{kind:"submit_id"}, password}` → ALWAYS `201` once OTP verified; body per §8.4 union: tier1 path `{"account":"active","tier":"tier1_phone","verification":"pending_identity","next_step":"..."}`, AUTO path adds `"verification":"auto_verified","tier":"tier2_identity"`; MANUAL/infra paths add `"identity_status":"queued_manual_review"|"auto_check_unavailable"`; `409 duplicate email`; `400 bad stage/token`.
 - Module-level storage functions (monkeypatch targets): `_create_session(token,payload,ttl)`, `_get_session(token)`, `_update_session(token,payload,stage)`, `_delete_session(token)` — backed by `signup_sessions` table, TTL from `RECOVERY_RESET_SESSION_TTL_SECONDS`? NO — signup session TTL is fixed 900s (spec §8.2).
-- Validation helpers exported for reuse: `valid_email(s)->bool` (local-part regex `^[a-z0-9][a-z0-9._-]{1,30}@` + domain = settings.mail_domain), `valid_phone(s)->bool` (`^\+[1-9]\d{7,14}$`), `password_ok(s)->bool` (≥ `password_min_length`).
+- Validation helpers exported for reuse: `valid_email(s)->bool` (local-part regex `^[a-z0-9][a-z0-9._-]{0,30}@` + domain = settings.mail_domain), `valid_phone(s)->bool` (`^\+[1-9]\d{7,14}$`), `password_ok(s)->bool` (≥ `password_min_length`).
 
 - [ ] **Step 1: Failing tests**
 
@@ -1171,7 +1171,10 @@ from ..services.idverify import IdentityOutcome
 
 router = APIRouter(prefix="/signup", tags=["signup"])
 
-LOCAL_PART = re.compile(r"^[a-z0-9][a-z0-9._-]{1,30}$")
+# T4-review ruling (ledger 2026-08-25): {0,30} is canonical — single-char locals
+# are legal and the plan's own T11-T14 fixtures use them; ldap_admin's boundary
+# validator mirrors this exact charset (T2 mirror invariant).
+LOCAL_PART = re.compile(r"^[a-z0-9][a-z0-9._-]{0,30}$")
 PHONE_E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 
 
