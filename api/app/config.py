@@ -73,7 +73,10 @@ class Settings(BaseSettings):
     smtp_host: str = "postfix"
     smtp_port: int = 2587
     allowed_redirect_uris: list[str] = [
-        "http://localhost:8000/auth/callback", "http://localhost:*/*", "sovereign://callback"]
+        "http://localhost:8000/auth/callback", "http://localhost:*/*", "sovereign://callback",
+        # Keycloak honors no port wildcards (Wave B gate finding) — the admin
+        # dashboard callback is pinned literally, matching the seeded client.
+        "http://localhost:8080/admin/callback"]
     ca_cert_path: str = "/certs/rootCA.pem"
 
     # --- Identity & Auth Flow subsystem (spec 2026-08-25 §16) ---

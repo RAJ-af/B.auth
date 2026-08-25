@@ -1919,7 +1919,7 @@ git commit -m "feat: auto/manual idverify dispatch with soft-fallback queueing"
 - Test: `api/tests/test_admin_dashboard.py` (auth half)
 
 **Interfaces:**
-- Consumes: existing `keycloak.get_discovery/build_authorize_url/exchange_code/LoginStateStore` (unchanged, reused verbatim); `auth.JWTVerifier.verify` via `get_verifier()`; `Settings.allowed_redirect_uris` (`http://localhost:*/*` already matches `/admin/callback`).
+- Consumes: existing `keycloak.get_discovery/build_authorize_url/exchange_code/LoginStateStore` (unchanged, reused verbatim); `auth.JWTVerifier.verify` via `get_verifier()`; `Settings.allowed_redirect_uris`. CORRECTED at the Wave B gate: Keycloak 26 honors NO port wildcards in valid redirect URIs — `http://localhost:*/*` does NOT match `/admin/callback`; the seeded client and Settings both pin `http://localhost:${KEYCLOAK_PORT}/admin/callback` literally.
 - Produces:
   - `require_admin(request) -> dict` FastAPI dependency. Bearer path: verify token, require `realm_access.roles ∋ "sovereign-admin"` else 403. Cookie path: `admin_session` cookie → in-memory `_SESSIONS[sid]` → claims; missing/expired → 403 for HTML routes / 401 JSON elsewhere.
   - `csrf_token_for(sid:str)->str`, `check_csrf(request, form_field:str)->None` (raises 403 on mismatch).

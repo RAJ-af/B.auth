@@ -29,6 +29,14 @@ $KCADM create clients -r "$KC_REALM" -f - <<JSON || $KCADM get "clients?clientId
    "protocolMapper":"oidc-audience-mapper",
    "config":{"included.client.audience":"${API_AUDIENCE}","access.token.claim":"true"}}]}
 JSON
+# Wave B gate: Keycloak 26 does NOT honor port wildcards in valid redirect
+# URIs ("Invalid parameter: redirect_uri" for http://localhost:<otherport>/...),
+# so the dashboard callback must be pinned literally. Converge on every run
+# (create-only would skip this on re-runs).
+CID_APP=$($KCADM get "clients?clientId=${KC_APP_CLIENT}" -r "$KC_REALM" \
+  --fields id --format csv --noquotes | tail -1)
+$KCADM update "clients/${CID_APP}" -r "$KC_REALM" \
+  -s "redirectUris=[\"http://localhost:8000/auth/callback\",\"http://localhost:*/*\",\"sovereign://callback\",\"http://localhost:${KEYCLOAK_PORT}/admin/callback\"]" >/dev/null
 
 # Confidential introspection client: generate secret, persist to .env (gitignored).
 # Re-runs must UPDATE the existing client's secret (not skip) so .env stays in
