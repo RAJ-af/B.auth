@@ -391,7 +391,6 @@ remain available to future tooling.
   email grants nothing.
 - Rate limit: ≤2 link requests per requester→target pair per rolling 24h window
   (§17) — request-spam must not function as email harassment.
-- Texts carry masked addresses (`R***@sovereign.mail`) and never codes.
 
 ## 13. Recovery (#6, #7)
 
@@ -635,7 +634,8 @@ with adversarial review per wave, deviations D-numbered in the ledger.
    app-level locks) — product decision, not security blocker.
 7. Domestic SMSC module + operator sender-ID/DLT registration — operator-side,
    interface documented (§9).
-8. Notification channel depth (push, email fallback) — in-app + SMS only for MVP.
+8. Notification channel depth (push, richer email content) — MVP ships in-app +
+   SMS for OTP/recovery alerts + plain email pointers for family events.
 9. **Dedicated least-privilege LDAP bind DN + slapd ACL** replacing global admin DN
    in api — BLOCKER before VPS phase, same milestone as MVP register #1.
 10. Password hash scheme investigation ({ARGON2}/{CRYPT} variants under OpenLDAP)
