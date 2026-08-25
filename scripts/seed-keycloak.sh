@@ -38,11 +38,12 @@ CID_APP=$($KCADM get "clients?clientId=${KC_APP_CLIENT}" -r "$KC_REALM" \
 $KCADM update "clients/${CID_APP}" -r "$KC_REALM" \
   -s "redirectUris=[\"http://localhost:8000/auth/callback\",\"http://localhost:*/*\",\"sovereign://callback\",\"http://localhost:${API_PORT}/admin/callback\"]" >/dev/null
 
-# Confidential introspection client: generate secret, persist to .env (gitignored).
-# Re-runs must UPDATE the existing client's secret (not skip) so .env stays in
-# sync with Keycloak — Wave B gate found the bare create aborted the whole seed
-# under set -e once the client existed.
-SECRET=$(openssl rand -hex 24)
+# Confidential introspection client: converge on the .env secret rather than
+# minting a fresh one each run — dovecot renders its copy at container creation
+# (compose interpolation), so per-run rotation desyncs it from Keycloak until
+# that container is recreated. Rotate ONLY on first boot (no .env value yet).
+SECRET=$(grep '^KC_INTROSPECTION_SECRET=' .env | head -1 | cut -d= -f2-)
+[ -n "$SECRET" ] || SECRET=$(openssl rand -hex 24)
 CID=$($KCADM create clients -r "$KC_REALM" -f - -i <<JSON
 {"clientId":"${KC_INTROSPECTION_CLIENT}","publicClient":false,"standardFlowEnabled":false,
  "directAccessGrantsEnabled":false,"secret":"${SECRET}"}
@@ -50,7 +51,8 @@ JSON
 ) || {
   CID=$($KCADM get "clients?clientId=${KC_INTROSPECTION_CLIENT}" -r "$KC_REALM" \
     --fields id --format csv --noquotes | tail -1)
-  $KCADM update "clients/${CID}" -r "$KC_REALM" -s "secret=${SECRET}"
+  $KCADM update "clients/${CID}" -r "$KC_REALM" \
+    -s "publicClient=false" -s "secret=${SECRET}"
 }
 grep -q '^KC_INTROSPECTION_SECRET=' .env && \
   sed -i "s|^KC_INTROSPECTION_SECRET=.*|KC_INTROSPECTION_SECRET=${SECRET}|" .env || \
