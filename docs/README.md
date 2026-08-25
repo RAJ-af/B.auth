@@ -119,8 +119,10 @@ resource server.
 - **Dovecot OAuth failures** — `docker compose logs dovecot`, then read
   `docs/spike-dovecot-oauth2.md` (setting-name variance and the `--hostname`
   issuer pin are covered there).
-- **Changed `MAIL_DOMAIN`?** Regenerate everything scoped to it: DKIM config
-  (`config/rspamd/local.d/dkim_signing.conf` domain block) + `gen-dkim.sh`,
+- **Changed `MAIL_DOMAIN`?** Regenerate everything scoped to it: DKIM keys
+  (`gen-dkim.sh` — the signing config itself needs no edit: its template
+  `config/rspamd/dkim_signing.conf.template` is rendered at container start
+  from `$MAIL_DOMAIN`/`$COMPOSE_SUBNET` into rspamd's `override.d`),
   certs (delete the `certs` volume so cert-init recreates SANs), and both
   seeds (LDAP suffix, users).
 

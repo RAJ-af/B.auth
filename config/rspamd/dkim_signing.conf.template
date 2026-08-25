@@ -1,0 +1,22 @@
+# DKIM signing policy (MVP) -- TEMPLATE, rendered at container start by
+# scripts/render-dkim-signing.sh into /etc/rspamd/override.d/dkim_signing.conf
+# (override.d loads AFTER local.d, so this generated policy wins over any static
+# copy). Placeholders are substituted with '|' delimiters (CIDR values contain
+# '/'), mirroring mail/postfix's template idiom.
+#
+# Why sign_networks is templated: without it compose-subnet submitters -- the
+# API's :2587 path has no AUTH, so sign_authenticated never fires -- arrive
+# unsigned. Array form REQUIRED: a bare string loads into the config but never
+# matches (verified empirically -- loopback signed, subnet submissions stayed
+# unsigned). The value must track COMPOSE_SUBNET in .env structurally; the
+# smoke gate asserts the rendered config equals .env on every run (step 1b).
+sign_local = true;
+sign_authenticated = true;
+sign_networks = ["__COMPOSE_SUBNET__"];
+try_fallback = false;
+domain {
+  __MAIL_DOMAIN__ {
+    path = "/var/lib/rspamd/dkim/default.private.key";
+    selector = "default";
+  }
+}

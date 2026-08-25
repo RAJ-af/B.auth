@@ -27,19 +27,19 @@ docker compose ps --format '{{.Service}} {{.Status}}' | tee /dev/stderr | \
     }' || { echo "unhealthy containers"; exit 1; }
 
 echo "== 1b. rspamd sign_networks == COMPOSE_SUBNET (drift guard) =="
-# dkim_signing.conf carries a STATIC copy of the compose subnet (rspamd reads no
-# compose env). If .env ever changes the subnet without the conf following,
-# submissions silently stop being signed — so compare both parses and fail
-# loudly on drift instead of discovering it via unsigned mail later.
-CONF_SUBNET=$(sed -n 's/^sign_networks[[:space:]]*=//p' \
-  config/rspamd/local.d/dkim_signing.conf | head -1 | tr -d ' ;[]"')
+# sign_networks is RENDERED at container start from $COMPOSE_SUBNET
+# (render-dkim-signing.sh -> override.d), so drift should be structurally
+# impossible — this guard proves the live RUNNING config really carries the
+# .env subnet on every gate run, catching rendering/wiring regressions rather
+# than comparing a static file that no longer exists.
+DUMP=$(docker compose exec -T rspamd rspamadm configdump dkim_signing 2>/dev/null)
 ENV_SUBNET=$(grep '^COMPOSE_SUBNET=' .env | cut -d= -f2)
-if [ -z "$CONF_SUBNET" ] || [ -z "$ENV_SUBNET" ] || [ "$CONF_SUBNET" != "$ENV_SUBNET" ]; then
-  echo "DRIFT: sign_networks='${CONF_SUBNET:-unset}' != COMPOSE_SUBNET='${ENV_SUBNET:-unset}'"
-  echo "       align config/rspamd/local.d/dkim_signing.conf with .env, then up -d rspamd"
+if [ -z "$ENV_SUBNET" ] || ! printf '%s' "$DUMP" | grep -qF "\"${ENV_SUBNET}\""; then
+  echo "DRIFT: live sign_networks does not contain COMPOSE_SUBNET='${ENV_SUBNET:-unset}'"
+  echo "       check render-dkim-signing.sh / compose env wiring, then up -d --force-recreate rspamd"
   exit 1
 fi
-echo "sign_networks ok (${CONF_SUBNET})"
+echo "sign_networks ok (${ENV_SUBNET})"
 
 echo "== 2. no plaintext auth mechs on dovecot =="
 docker compose exec -T dovecot doveconf -n | tee /dev/stderr | \

@@ -132,10 +132,24 @@ services:
     # connect gate on 11332 via bash /dev/tcp.
     image: rspamd/rspamd:3.9
     hostname: rspamd
+    # sign_networks templating: the image pins USER=_rspamd(11333) which cannot
+    # write under /etc/rspamd, so the entrypoint wrapper runs as root, renders
+    # the template into override.d (loaded after local.d) from COMPOSE_SUBNET /
+    # MAIL_DOMAIN -- the same env postfix renders main.cf from -- and drops back
+    # to 11333 before exec'ing rspamd. The subnet can no longer diverge from
+    # .env structurally; smoke step 1b asserts the live dump matches .env.
+    user: "0:0"
+    entrypoint: ["/usr/local/bin/render-dkim-signing.sh"]
+    command: ["/usr/bin/rspamd", "-f"]
+    environment:
+      COMPOSE_SUBNET: ${COMPOSE_SUBNET}
+      MAIL_DOMAIN: ${MAIL_DOMAIN}
     volumes:
       - rspamd_data:/var/lib/rspamd
       - dkim_keys:/var/lib/rspamd/dkim
       - ./config/rspamd/local.d:/etc/rspamd/local.d:ro
+      - ./config/rspamd/dkim_signing.conf.template:/templates/dkim_signing.conf.template:ro
+      - ./scripts/render-dkim-signing.sh:/usr/local/bin/render-dkim-signing.sh:ro
     networks: [mailnet]
     healthcheck:
       test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/localhost/11332'"]
