@@ -123,12 +123,14 @@ def send_challenge(phone: str, purpose: str, channel: str = "sms") -> None:
 def verify_challenge(phone: str, purpose: str, code: str) -> bool:
     now = time.time()
     ch = _latest_active(phone, purpose, now)
+    if ch is None:
+        return False                     # unknown phone/purpose: generic fail
     try:
-        check_code(ch and ch["code_sha256"], ch and ch["attempts_left"],
-                   ch and ch["expires_at_ts"], bool(ch and ch["consumed"]),
+        check_code(ch["code_sha256"], ch["attempts_left"],
+                   ch["expires_at_ts"], bool(ch["consumed"]),
                    code, now=now)
     except InvalidCode as e:
-        if ch and "expired" not in str(e) and "consumed" not in str(e):
+        if "expired" not in str(e) and "consumed" not in str(e):
             execute("UPDATE otp_challenges SET attempts_left=attempts_left-1 "
                     "WHERE id=%s", (ch["id"],))
         raise

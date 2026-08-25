@@ -1,6 +1,8 @@
 """otp_service budget + verification logic; SQL is faked at module boundary."""
+import base64
 import time
 
+import httpx
 import pytest
 
 from app.services import otp_service as ot
@@ -99,3 +101,88 @@ def test_check_code_paths():
     with pytest.raises(ot.InvalidCode, match="consumed"):
         ot.check_code(good, 5, NOW + 60, True, "123456", now=NOW)
     assert ot.check_code(None, None, None, False, "000000", now=NOW) is False
+
+
+# --- verify_challenge (fix round 1: previously untested) --------------------
+
+def _shape_latest(store, monkeypatch):
+    """Wrap the store fixture's _latest_active so returned rows carry the same
+    keys the real SQL projection produces (id, expires_at_ts, consumed)."""
+    def latest(phone, purpose, now):
+        row = next((r for r in store["rows"]
+                    if r["phone"] == phone and r["purpose"] == purpose), None)
+        if row is None:
+            return None
+        return {"id": 1,
+                "code_sha256": row["code_sha256"],
+                "attempts_left": row["attempts_left"],
+                "expires_at_ts": row["expires_at"],
+                "consumed": False}
+    monkeypatch.setattr(ot, "_latest_active", latest)
+
+
+def test_verify_unknown_phone_returns_false(store, monkeypatch):
+    """No challenge row -> clean False, never a TypeError/raw 500."""
+    _install(store, monkeypatch=monkeypatch)
+    assert ot.verify_challenge("+15550009", "signup", "123456") is False
+
+
+def test_verify_correct_code_consumes(store, monkeypatch):
+    p = _install(store, monkeypatch=monkeypatch)
+    _shape_latest(store, monkeypatch)
+    updates = []
+    monkeypatch.setattr(ot, "execute",
+                        lambda q, params=(): updates.append((q, params)))
+    ot.send_challenge("+15550010", "signup", "sms")
+    code = p.calls[0][1]
+    assert ot.verify_challenge("+15550010", "signup", code) is True
+    assert any("consumed_at" in q for q, _ in updates)
+
+
+def test_verify_wrong_code_decrements_attempts(store, monkeypatch):
+    p = _install(store, monkeypatch=monkeypatch)
+    _shape_latest(store, monkeypatch)
+    updates = []
+    monkeypatch.setattr(ot, "execute",
+                        lambda q, params=(): updates.append((q, params)))
+    ot.send_challenge("+15550011", "signup", "sms")
+    real = p.calls[0][1]
+    wrong = "000000" if real != "000000" else "111111"   # deterministic mismatch
+    with pytest.raises(ot.InvalidCode):
+        ot.verify_challenge("+15550011", "signup", wrong)
+    assert sum("attempts_left=attempts_left-1" in q for q, _ in updates) == 1
+
+
+# --- twilio wire credentials (fix round 1 regression) -----------------------
+
+def test_twilio_wire_header_carries_real_credentials(monkeypatch):
+    """Regression: httpx's auth_flow OVERWRITES any manually set Authorization
+    header, so the previous code (manual header + placeholder auth tuple) always
+    authenticated as the placeholder and every send got a 401. This test
+    inspects what actually goes out on the wire via MockTransport."""
+    from app.services.providers import twilio as tw
+
+    captured = {}
+
+    def handler(request):
+        captured["authorization"] = request.headers["Authorization"]
+        return httpx.Response(201, json={"sid": "SM-dummy"})
+
+    def fake_post(url, **kwargs):
+        # Route through MockTransport so we can inspect the outgoing request.
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            return client.post(url, **kwargs)
+
+    class _StubSettings:
+        twilio_account_sid = "AC-dummy-sid"
+        twilio_auth_token = "dummy-token"
+        twilio_from_number = "+15550009999"
+
+    monkeypatch.setattr(tw.httpx, "post", fake_post)
+    monkeypatch.setattr(tw, "get_settings", lambda: _StubSettings())
+
+    assert tw.send_otp("+15550001", "123456", "sms") is True
+    wire = captured["authorization"]
+    assert wire.startswith("Basic ")
+    decoded = base64.b64decode(wire.removeprefix("Basic ")).decode()
+    assert decoded == "AC-dummy-sid:dummy-token"
