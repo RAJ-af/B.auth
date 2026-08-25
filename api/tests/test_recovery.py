@@ -209,6 +209,20 @@ def test_family_approve_without_standing_changes_nothing(w):
     assert out["decided_by"] is None                  # nothing was written
 
 
+def test_family_approve_self_approval_refused(w):
+    """R7 pinning: sitting on a usable link does NOT let the requester approve
+    their own window — two-party control holds even for linked accounts."""
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "relative@sovereign.mail"})
+    out = rc.start_recovery("alice@sovereign.mail", None)
+    rc.verify_otp("alice@sovereign.mail", "123456")
+    assert out["status"] == "pending_family"
+    assert rc.family_approve("alice@sovereign.mail",
+                             "alice@sovereign.mail") is False
+    assert out["status"] == "pending_family"          # untouched
+    assert out["decided_by"] is None                  # nothing was written
+
+
 def test_delete_device_voids_pending_dwell(w, monkeypatch):
     raw = "devrawXYZ"
     dev = {"device_hash": "abcd" * 16, "email": "alice@sovereign.mail"}
