@@ -43,12 +43,15 @@ def w(monkeypatch):
 
     # Settings override: conftest pins MAIL_DOMAIN=test.mail (ldap tests), but
     # this module's flows use @sovereign.mail. Swap the router-bound get_settings
-    # so the REAL valid_email/password_ok run against sovereign.mail.
+    # so the REAL valid_email/password_ok run against sovereign.mail. ONE shared
+    # namespace (not a fresh object per call) so Task 7's mode-binding tests can
+    # monkeypatch idverify_mode on the very object the router reads back.
     import types as _ts
     _real_s = sr.get_settings()
     _d = dict(_real_s.model_dump()) if hasattr(_real_s, "model_dump") else dict(_real_s)
     _d["mail_domain"] = "sovereign.mail"
-    monkeypatch.setattr(sr, "get_settings", lambda: _ts.SimpleNamespace(**_d))
+    _settings_ns = _ts.SimpleNamespace(**_d)
+    monkeypatch.setattr(sr, "get_settings", lambda: _settings_ns)
 
     # provisioning writes go through app.db; swap them so no Postgres is needed
     sql: list[tuple] = []
@@ -56,9 +59,19 @@ def w(monkeypatch):
     monkeypatch.setattr(appdb, "execute", lambda q, p=(): sql.append((q, p)))
     monkeypatch.setattr(appdb, "one", lambda q, p=(): None)
 
+    # Manual-review queue seam: no DB locally, so _enqueue_review is the only
+    # seam these tests need to observe verification_reviews inserts.
+    reviews: list[dict] = []
+    monkeypatch.setattr(idverify_mod(), "_enqueue_review",
+                        lambda email, payload, *, reason, detail:
+                        reviews.append({"email": email, "status": "pending",
+                                        "reason": reason,
+                                        "error_detail": detail}))
+
     from fastapi.testclient import TestClient
     return {"client": TestClient(create_app()), "sessions": sessions,
-            "ldap_created": ldap_created, "otp_sent": otp_sent, "sql": sql}
+            "ldap_created": ldap_created, "otp_sent": otp_sent, "sql": sql,
+            "reviews": reviews}
 
 
 def _start(w, email="newuser@sovereign.mail", **over):
@@ -277,3 +290,86 @@ def test_verify_otp_with_live_driver_shape_session(monkeypatch):
     assert r.status_code == 200
     assert r.json()["stage"] == "awaiting_identity_choice"
     assert rows["tok"]["stage"] == "awaiting_identity_choice"
+
+
+# --- Task 7: AUTO/MANUAL dispatch through /signup/complete -------------------
+
+def _submit_id_choice():
+    return {"kind": "submit_id", "full_name": "New User",
+            "document_type": "national_id", "id_number": "AB1234567",
+            "consent_selfie": True}
+
+
+def test_auto_mode_verified_upgrades_tier(w, monkeypatch):
+    """IDVERIFY_MODE=auto + verifier says yes -> tier2_identity/auto_verified,
+    no identity_status field in the body, and the raw id number never reaches
+    a signup session."""
+    monkeypatch.setattr(sr_settings(), "idverify_mode", "auto")
+
+    def fake_run(payload):
+        return {"contract_version": 1, "verified": True,
+                "identities": [{"is_minor": False, "name": payload["full_name"],
+                                "type": payload["document_type"],
+                                "number_masked": "••••9999"}], "warnings": []}
+    monkeypatch.setattr(idverify_mod(), "run_auto_check", fake_run)
+    tok = _start(w)
+    w["client"].post("/signup/verify-otp", json={"token": tok, "code": "123456"})
+    r = w["client"].post("/signup/complete",
+                         json={"token": tok, "choice": _submit_id_choice(),
+                               "password": "long-enough-password-1"})
+    b = r.json()
+    assert r.status_code == 201
+    assert (b["tier"], b["verification"]) == ("tier2_identity", "auto_verified")
+    assert "identity_status" not in b
+    # raw id number never persisted anywhere reachable (signup_sessions only;
+    # verification_reviews deliberately keeps it for operator review):
+    blob = json.dumps(w["sessions"])
+    assert "AB1234567" not in blob
+
+
+def test_manual_mode_queues_review_and_stays_tier1(w, monkeypatch):
+    """IDVERIFY_MODE=manual -> policy_manual row queued for operators while the
+    account still provisions at tier1 with queued_manual_review status."""
+    monkeypatch.setattr(sr_settings(), "idverify_mode", "manual")
+    tok = _start(w)
+    w["client"].post("/signup/verify-otp", json={"token": tok, "code": "123456"})
+    r = w["client"].post("/signup/complete",
+                         json={"token": tok, "choice": _submit_id_choice(),
+                               "password": "long-enough-password-1"})
+    b = r.json()
+    assert r.status_code == 201
+    assert (b["tier"], b["verification"]) == ("tier1_phone", "pending_identity")
+    assert b["identity_status"] == "queued_manual_review"
+
+
+def test_infra_failure_soft_fallback_queues_script_error(w, monkeypatch):
+    """Verifier infra blowup mid-complete => the 201 invariant holds, the
+    soft-fallback union member is returned, and an auto_script_error row lands
+    in the review queue."""
+    monkeypatch.setattr(sr_settings(), "idverify_mode", "auto")
+
+    def boom(payload):
+        raise idverify_mod().IdverifyInfraError("script missing")
+    monkeypatch.setattr(idverify_mod(), "run_auto_check", boom)
+    tok = _start(w)
+    w["client"].post("/signup/verify-otp", json={"token": tok, "code": "123456"})
+    r = w["client"].post("/signup/complete",
+                         json={"token": tok, "choice": _submit_id_choice(),
+                               "password": "long-enough-password-1"})
+    b = r.json()
+    assert r.status_code == 201                      # complete NEVER fails post-OTP
+    assert b["identity_status"] == "auto_check_unavailable"
+    assert b["tier"] == "tier1_phone"
+    # and a verification_reviews row was queued with reason auto_script_error:
+    assert [row["reason"] for row in w["reviews"]] == ["auto_script_error"]
+
+
+# small helpers used by the Task 7 tests above
+def sr_settings():
+    import app.routers.signup_router as m
+    return m.get_settings()
+
+
+def idverify_mod():
+    from app.services import idverify
+    return idverify

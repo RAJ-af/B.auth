@@ -18,6 +18,7 @@ escape hatch for deliberate host-side probes.
 import os
 import sys
 from pathlib import Path
+from typing import Literal
 
 from functools import lru_cache
 from pydantic_settings import BaseSettings
@@ -90,7 +91,7 @@ class Settings(BaseSettings):
     otp_max_sends_per_hour: int = 3
     otp_max_verify_attempts: int = 5
     otp_daily_cap: int = 200
-    idverify_mode: str = "off"            # off | auto | manual
+    idverify_mode: Literal["off", "auto", "manual"] = "off"
     idverify_script: str = "/verify/mock-idverify.sh"
     idverify_timeout_seconds: int = 20
     family_link_cooldown_hours: int = 48

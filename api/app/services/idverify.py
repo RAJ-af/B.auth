@@ -98,9 +98,45 @@ def map_result(result: dict, *, email: str) -> IdentityOutcome:
 
 def outcome_for_mode(mode: str, choice: dict | None = None,
                      payload_email: str = "") -> IdentityOutcome:
-    """Entry point used by the signup router (Task 7 wires AUTO/MANUAL through)."""
+    """Entry point used by the signup router: dispatch per IDVERIFY_MODE."""
     if mode == "off":
         return IdentityOutcome(
             "tier1_phone", "pending_identity", "identity_checks_off",
             "ID submission disabled in this deployment (IDVERIFY_MODE=off)")
-    raise NotImplementedError("Task 7 completes AUTO/MANUAL dispatch")
+    choice = choice or {}
+    payload = {"contract_version": CONTRACT_VERSION,
+               "full_name": choice.get("full_name", ""),
+               "document_type": choice.get("document_type", ""),
+               "id_number": choice.get("id_number", ""),
+               "consent_selfie": bool(choice.get("consent_selfie"))}
+    if mode == "manual":
+        _enqueue_review(payload_email, payload, reason="policy_manual",
+                        detail="deployment runs manual-only verification")
+        return IdentityOutcome("tier1_phone", "pending_identity",
+                               "queued_manual_review",
+                               "an operator will review your submission")
+    # Settings pins idverify_mode to off|auto|manual at boot; this assert is
+    # dead-code defense for direct callers only.
+    assert mode == "auto", f"unknown idverify mode {mode!r}"
+    try:
+        result = run_auto_check(payload)
+    except IdverifyInfraError as e:
+        log.warning("idverify infra failure for %s: %s", payload_email, e)
+        _enqueue_review(payload_email, payload, reason="auto_script_error",
+                        detail=str(e))
+        return IdentityOutcome("tier1_phone", "pending_identity",
+                               "auto_check_unavailable",
+                               "automatic verification is having trouble; "
+                               "your submission was queued for review")
+    return map_result(result, email=payload_email)
+
+
+def _enqueue_review(email: str, payload: dict, *, reason: str,
+                    detail: str) -> None:
+    """Queue an operator review row. Notification fan-out attaches in Task 11;
+    manual-review INSERTs go straight to verification_reviews until then."""
+    from ..db import execute
+    execute("""INSERT INTO verification_reviews
+               (email, payload_json, status, reason, error_detail)
+               VALUES (%s, %s::jsonb, 'pending', %s, %s)""",
+            (email, json.dumps(payload), reason, detail))
