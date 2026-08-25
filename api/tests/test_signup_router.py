@@ -65,7 +65,7 @@ def w(monkeypatch):
     monkeypatch.setattr(idverify_mod(), "_enqueue_review",
                         lambda email, payload, *, reason, detail:
                         reviews.append({"email": email, "status": "pending",
-                                        "reason": reason,
+                                        "payload": payload, "reason": reason,
                                         "error_detail": detail}))
 
     from fastapi.testclient import TestClient
@@ -340,6 +340,17 @@ def test_manual_mode_queues_review_and_stays_tier1(w, monkeypatch):
     assert r.status_code == 201
     assert (b["tier"], b["verification"]) == ("tier1_phone", "pending_identity")
     assert b["identity_status"] == "queued_manual_review"
+    # Coverage pin: dropping the enqueue call must fail here. Exactly one
+    # pending review row, carrying what operators need to review.
+    assert len(w["reviews"]) == 1
+    queued = w["reviews"][0]
+    assert (queued["email"], queued["status"], queued["reason"]) == (
+        "newuser@sovereign.mail", "pending", "policy_manual")
+    assert queued["payload"] == {"contract_version": 1,
+                                 "full_name": "New User",
+                                 "document_type": "national_id",
+                                 "id_number": "AB1234567",
+                                 "consent_selfie": True}
 
 
 def test_infra_failure_soft_fallback_queues_script_error(w, monkeypatch):
@@ -362,6 +373,7 @@ def test_infra_failure_soft_fallback_queues_script_error(w, monkeypatch):
     assert b["tier"] == "tier1_phone"
     # and a verification_reviews row was queued with reason auto_script_error:
     assert [row["reason"] for row in w["reviews"]] == ["auto_script_error"]
+    assert w["reviews"][0]["error_detail"] == "script missing"
 
 
 # small helpers used by the Task 7 tests above

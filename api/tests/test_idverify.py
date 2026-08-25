@@ -94,6 +94,25 @@ def test_coerced_contract_version_is_infra_error(monkeypatch):
             _run(monkeypatch, "x", out=blob)
 
 
+def test_non_bool_verified_is_infra_error(monkeypatch):
+    # map_result branches on verified truthiness; a verifier-typed string like
+    # "yes" must die at the runner boundary, not steer a tier decision.
+    with pytest.raises(iv.IdverifyInfraError, match="'verified' was not"):
+        _run(monkeypatch, "x", out=json.dumps(
+            {"contract_version": 1, "verified": "yes", "identities": [],
+             "warnings": []}))
+
+
+def test_identities_with_null_entry_is_infra_error(monkeypatch):
+    # {"identities":[null]} once slipped past top-level-only guards into
+    # ids[0].get(...) -> AttributeError -> user-facing 500 after a paid OTP;
+    # the boundary must reject any non-object entry.
+    with pytest.raises(iv.IdverifyInfraError, match="list of objects"):
+        _run(monkeypatch, "x", out=json.dumps(
+            {"contract_version": 1, "verified": True, "identities": [None],
+             "warnings": []}))
+
+
 def test_timeout_is_infra_error(monkeypatch):
     def fake_popen(*a, **k):
         class R:

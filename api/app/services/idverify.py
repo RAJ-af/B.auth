@@ -73,6 +73,15 @@ def run_auto_check(payload: dict) -> dict:
         raise IdverifyInfraError("idverify stdout was not a JSON object")
     if out.get("contract_version") is not CONTRACT_VERSION:
         raise IdverifyInfraError("idverify contract_version mismatch")
+    # Shape-fence exactly what map_result dereferences: a verifier returning
+    # {"verified": true, "identities": [null]} must surface as infra error,
+    # never as an AttributeError -> user-facing 500 after a paid OTP.
+    if not isinstance(out.get("verified"), bool):
+        raise IdverifyInfraError("idverify 'verified' was not a boolean")
+    ids = out.get("identities", [])
+    if not isinstance(ids, list) or any(not isinstance(i, dict) for i in ids):
+        raise IdverifyInfraError(
+            "idverify 'identities' was not a list of objects")
     return out
 
 
