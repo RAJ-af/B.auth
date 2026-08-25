@@ -60,7 +60,12 @@ def _get_session(token: str) -> dict | None:
                FROM signup_sessions WHERE token=%s""", (token,))
     if not r or r["exp"] < time.time():
         return None
-    return {"payload": json.loads(r["payload_json"]), "stage": r["stage"]}
+    raw = r["payload_json"]
+    if isinstance(raw, (str, bytes, bytearray)):
+        # Fakes hand back JSON text; the live psycopg3 dict_row driver decodes
+        # jsonb to a dict before this seam sees it. Accept both shapes.
+        raw = json.loads(raw)
+    return {"payload": raw, "stage": r["stage"]}
 
 
 def _update_session(token: str, payload: dict, stage: str) -> dict:

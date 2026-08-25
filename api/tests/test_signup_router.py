@@ -1,4 +1,7 @@
 """Signup flow against faked storage/LDAP/OTP boundaries (contract §8.4)."""
+import json
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -213,3 +216,64 @@ def test_ldap_probe_outage_at_start_is_503_no_otp_burned(w, monkeypatch):
     assert r.status_code == 503
     assert w["otp_sent"] == []
     assert w["sessions"] == {}
+
+
+def test_real_get_session_accepts_both_payload_shapes(monkeypatch):
+    """Gate-fix regression: the live psycopg3 dict_row driver decodes jsonb to
+    a dict BEFORE _get_session sees it, so json.loads(dict) was a TypeError
+    500 at verify-otp/complete. The REAL seam (not the fixture fake) must
+    accept the driver shape and the JSON-string shape interchangeably."""
+    import app.db as appdb
+    import app.routers.signup_router as sr
+
+    payload = {"email": "gatedrive@sovereign.mail", "display_name": "G",
+               "phone_e164": "+911234567890", "account_type": "independent"}
+    exp = time.time() + 900
+
+    monkeypatch.setattr(appdb, "one", lambda q, p=(): {
+        "payload_json": dict(payload),       # live-driver shape: already a dict
+        "stage": "awaiting_otp", "exp": exp})
+    out = sr._get_session("tok")
+    assert out == {"payload": payload, "stage": "awaiting_otp"}
+
+    monkeypatch.setattr(appdb, "one", lambda q, p=(): {
+        "payload_json": json.dumps(payload),  # fake shape: raw JSON text
+        "stage": "awaiting_otp", "exp": exp})
+    out = sr._get_session("tok")
+    assert out == {"payload": payload, "stage": "awaiting_otp"}
+
+
+def test_verify_otp_with_live_driver_shape_session(monkeypatch):
+    """Full-flow gate pin: REAL session seams over a db fake returning the
+    live psycopg3 shape — verify-otp must proceed normally, never 500."""
+    import app.db as appdb
+    import app.routers.signup_router as sr
+
+    rows = {"tok": {"payload_json": {"email": "gatedrive@sovereign.mail",
+                                     "display_name": "G",
+                                     "phone_e164": "+911234567890",
+                                     "account_type": "independent"},
+                    "stage": "awaiting_otp",          # driver-decoded jsonb
+                    "exp": time.time() + 900}}
+    monkeypatch.setattr(appdb, "one", lambda q, p=(): rows.get(p[0]))
+
+    def fake_execute(q, p=()):
+        # Mirror the real UPDATE signup_sessions ... so stage flips on disk.
+        if p and len(p) == 3:
+            rows[p[2]]["payload_json"] = json.loads(p[0])
+            rows[p[2]]["stage"] = p[1]
+    monkeypatch.setattr(appdb, "execute", fake_execute)
+
+    def fake_send(phone, purpose, channel="sms"):
+        pass
+    def fake_verify(phone, purpose, code):
+        return code == "123456"
+    monkeypatch.setattr(sr.otp_service, "send_challenge", fake_send)
+    monkeypatch.setattr(sr.otp_service, "verify_challenge", fake_verify)
+
+    client = TestClient(create_app())
+    r = client.post("/signup/verify-otp",
+                    json={"token": "tok", "code": "123456"})
+    assert r.status_code == 200
+    assert r.json()["stage"] == "awaiting_identity_choice"
+    assert rows["tok"]["stage"] == "awaiting_identity_choice"
