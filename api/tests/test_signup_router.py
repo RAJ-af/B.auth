@@ -156,3 +156,31 @@ def test_off_mode_soft_fallback_contract(w, monkeypatch):
                                "password": "long-enough-password-1"})
     assert r.status_code == 201
     assert "identity_status" not in r.json()
+
+
+def test_ldap_down_503_session_retained_then_recovers(w, monkeypatch):
+    """LdapUnavailable during complete => honest 503; session RETAINED so the
+    same token completes successfully once the directory recovers."""
+    import app.routers.signup_router as sr
+
+    tok = _start(w)
+    w["client"].post("/signup/verify-otp", json={"token": tok, "code": "123456"})
+    payload = {"token": tok, "choice": {"kind": "skip"},
+               "password": "long-enough-password-1"}
+
+    def down(email, display_name, password):
+        raise sr.ldap_admin.LdapUnavailable("connection refused")
+    monkeypatch.setattr(sr.ldap_admin, "create_user", down)
+
+    r = w["client"].post("/signup/complete", json=payload)
+    assert r.status_code == 503
+    assert tok in w["sessions"]              # session survives the outage
+
+    def recovered(email, display_name, password):
+        w["ldap_created"].append((email, display_name, password))
+    monkeypatch.setattr(sr.ldap_admin, "create_user", recovered)
+
+    r2 = w["client"].post("/signup/complete", json=payload)
+    assert r2.status_code == 201
+    assert r2.json()["account"] == "active"
+    assert tok not in w["sessions"]          # burned only on full success

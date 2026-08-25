@@ -185,15 +185,11 @@ def complete(body: CompleteBody):
     except ldap_admin.AddressTaken:
         raise HTTPException(409, "Address already registered")
     except ldap_admin.LdapUnavailable as e:
-        # Soft-fallback: provision failed but signup is complete; return 201.
-        # Caller retries /signup/complete after admin fixes LDAP.
-        # Session is kept (not deleted) so the retry has all state.
-        out = {"account": "partial_provision",
-               "email": p["email"],
-               "tier": final_tier, "verification": final_verification,
-               "message": "Account pending directory sync",
-               "error": f"directory unavailable: {e}"} | extra
-        return out
+        # Honest infrastructure failure, not an identity verdict: the plan's
+        # explicit contract is 503 with the session RETAINED so the client can
+        # re-complete once the directory recovers. _delete_session below only
+        # runs on success, so the session survives this raise.
+        raise HTTPException(503, f"directory unavailable: {e}")
     _delete_session(body.token)
     out = {"account": "active", "email": p["email"],
            "tier": final_tier, "verification": final_verification,

@@ -15,7 +15,7 @@ from ..ssha_util import ssha
 log = logging.getLogger(__name__)
 
 # Mirrors the signup layer's charset exactly (controller ruling — do not widen).
-_EMAIL_LOCAL = re.compile(r"[a-z0-9][a-z0-9._-]{1,30}")
+_EMAIL_LOCAL = re.compile(r"[a-z0-9][a-z0-9._-]{0,30}")
 
 
 class LdapUnavailable(Exception):
