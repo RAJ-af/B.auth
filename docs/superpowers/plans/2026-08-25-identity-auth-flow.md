@@ -2480,7 +2480,7 @@ git commit -m "feat: server-rendered admin review queue with masked payloads + c
 
 ### Task 10: WAVE B LIVE GATE (codespace, Docker)
 
-- [ ] **Step 1: Push local → pull codespace → rebuild** (same ritual as Task 5 Step 1–2; also `scripts/db-migrate.sh` no-op check)
+- [ ] **Step 1: Push local → pull codespace → rebuild** (same ritual as Task 5 Step 1–2; also `scripts/db-migrate.sh` no-op check). NOTE (Wave B gate finding, fixed in Dockerfile): the image copies only `app/` to `/srv/app`, so T9's `parents[1]/static` and `parents[2]/templates` resolved to nonexistent `/srv/*` and uvicorn crash-looped at import. Fix = `COPY templates/ templates/` + `COPY static/ static/` so `/srv` mirrors `api/`.
 
 - [ ] **Step 2: Seed role + prove RBAC**
 
