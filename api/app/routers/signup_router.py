@@ -2,7 +2,9 @@
 
 Invariant under test: after a verified phone OTP, /signup/complete cannot fail
 for identity-reasons — identity checks may only ADD information (soft-fallback),
-never block provisioning. 503 lives solely at the OTP-send step.
+never block provisioning. 503 marks infrastructure unavailability ONLY: the
+OTP-send step (budget/provider) at start, and directory failures (LDAP probe
+at start, provisioning at complete). verify-otp never returns 503.
 """
 import json
 import re
@@ -18,14 +20,17 @@ from ..services.idverify import IdentityOutcome
 
 router = APIRouter(prefix="/signup", tags=["signup"])
 
-LOCAL_PART = re.compile(r"^[a-z0-9][a-z0-9._-]{0,30}$")
+# Anchor-free and fullmatch()-checked, byte-identical to ldap_admin's
+# _EMAIL_LOCAL: '$' alone would match BEFORE a trailing newline, letting "x\n"
+# pass here and die as a raw ValueError 500 at the LDAP boundary.
+LOCAL_PART = re.compile(r"[a-z0-9][a-z0-9._-]{0,30}")
 PHONE_E164 = re.compile(r"^\+[1-9]\d{7,14}$")
 
 
 def valid_email(email: str) -> bool:
     local, _, domain = email.partition("@")
     return bool(local and domain == get_settings().mail_domain
-                and LOCAL_PART.match(local))
+                and LOCAL_PART.fullmatch(local))
 
 
 def valid_phone(phone: str) -> bool:
@@ -116,8 +121,12 @@ def start(body: StartBody):
                                  f"domain must be {get_settings().mail_domain})")
     if not valid_phone(body.phone_e164):
         raise HTTPException(422, "phone must be E.164 like +911234567890")
-    if ldap_admin.address_exists(body.email):
-        raise HTTPException(409, "Address already registered")
+    try:
+        if ldap_admin.address_exists(body.email):
+            raise HTTPException(409, "Address already registered")
+    except ldap_admin.LdapUnavailable as e:
+        # Directory outage at the front door: clean 503, no OTP budget burned.
+        raise HTTPException(503, f"directory unavailable: {e}")
     token = secrets.token_urlsafe(24)
     try:
         otp_service.send_challenge(body.phone_e164, "signup")

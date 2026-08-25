@@ -184,3 +184,32 @@ def test_ldap_down_503_session_retained_then_recovers(w, monkeypatch):
     assert r2.status_code == 201
     assert r2.json()["account"] == "active"
     assert tok not in w["sessions"]          # burned only on full success
+
+
+def test_trailing_newline_local_part_is_422_not_500(w):
+    """$-anchor regression pin: '$' matches BEFORE a trailing newline, so the
+    old LOCAL_PART.match('x\\n') passed while ldap_admin's fullmatch rejected
+    it — a reachable raw 500. API-layer fullmatch closes the divergence."""
+    r = w["client"].post("/signup/start", json={
+        "email": "x\n@sovereign.mail", "display_name": "X",
+        "phone_e164": "+911234567890", "account_type": "independent"})
+    assert r.status_code == 422
+    assert w["sessions"] == {}               # nothing persisted
+    assert w["otp_sent"] == []               # no budget touched
+
+
+def test_ldap_probe_outage_at_start_is_503_no_otp_burned(w, monkeypatch):
+    """Directory outage at /signup/start => clean 503 (never a raw 500) and
+    zero OTP sends attempted."""
+    import app.routers.signup_router as sr
+
+    def probe_down(email):
+        raise sr.ldap_admin.LdapUnavailable("connection refused")
+    monkeypatch.setattr(sr.ldap_admin, "address_exists", probe_down)
+
+    r = w["client"].post("/signup/start", json={
+        "email": "anyone@sovereign.mail", "display_name": "A",
+        "phone_e164": "+911234567890", "account_type": "independent"})
+    assert r.status_code == 503
+    assert w["otp_sent"] == []
+    assert w["sessions"] == {}
