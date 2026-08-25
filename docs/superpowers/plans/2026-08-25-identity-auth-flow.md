@@ -1547,8 +1547,9 @@ def _run(monkeypatch, mode, payload=None, **run_kwargs):
         {"contract_version": 1, "verified": False, "identities": [],
          "warnings": []})
     monkeypatch.setattr(iv.subprocess, "run", fake_run)
-    monkeypatch.setattr(iv.get_settings, "cache_clear", lambda: None)
-    monkeypatch.setattr("app.config.get_settings",
+    # Patch where get_settings is USED (iv binds it at import time); a plain
+    # lambda has no cache_clear, so that older line is gone.
+    monkeypatch.setattr(iv, "get_settings",
                         lambda: type("S", (), {
                             "idverify_script": "/verify/mock.sh",
                             "idverify_timeout_seconds": 20})())
@@ -1586,7 +1587,7 @@ def test_timeout_is_infra_error(monkeypatch):
     def boom(*a, **k):
         raise subprocess.TimeoutExpired(cmd="x", timeout=20)
     monkeypatch.setattr(iv.subprocess, "run", boom)
-    monkeypatch.setattr("app.config.get_settings", lambda: type(
+    monkeypatch.setattr(iv, "get_settings", lambda: type(
         "S", (), {"idverify_script": "/v.sh", "idverify_timeout_seconds": 20})())
     with pytest.raises(iv.IdverifyInfraError, match="timed out"):
         iv.run_auto_check({"contract_version": 1})
