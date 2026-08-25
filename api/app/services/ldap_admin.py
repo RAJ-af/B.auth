@@ -5,13 +5,17 @@ The Phase-2 swap to a least-privilege bind DN touches exactly this file. Exposed
 surface is deliberately two verbs: create_user, set_password.
 """
 import logging
+import re
 
-from ldap3 import MODIFY_REPLACE, Server
+from ldap3 import Connection, MODIFY_REPLACE, Server
 
 from ..config import get_settings
 from ..ssha_util import ssha
 
 log = logging.getLogger(__name__)
+
+# Mirrors the signup layer's charset exactly (controller ruling — do not widen).
+_EMAIL_LOCAL = re.compile(r"[a-z0-9][a-z0-9._-]{1,30}")
 
 
 class LdapUnavailable(Exception):
@@ -20,6 +24,15 @@ class LdapUnavailable(Exception):
 
 class AddressTaken(Exception):
     pass
+
+
+def _validated_email(email: str) -> str:
+    """Last-line defense before DN/filter interpolation at the write boundary."""
+    local = email.partition("@")[0]
+    if not _EMAIL_LOCAL.fullmatch(local) \
+            or email != f"{local}@{get_settings().mail_domain}":
+        raise ValueError("email rejected at LDAP write boundary")
+    return email
 
 
 def base_dn() -> str:
@@ -41,13 +54,19 @@ def _connect():
 
 
 def address_exists(email: str) -> bool:
+    _validated_email(email)
     with _connect() as c:
         c.search(f"ou=people,{base_dn()}", f"(mail={email})",
                  attributes=["mail"])
+        if c.response is None or c.result.get("result") != 0:
+            raise LdapUnavailable(
+                f"address probe failed: "
+                f"{c.result.get('description', 'no response')}")
         return bool(c.entries)
 
 
 def create_user(email: str, display_name: str, password: str) -> None:
+    _validated_email(email)
     dn = f"mail={email},ou=people,{base_dn()}"
     with _connect() as c:
         ok = c.add(dn, ["inetOrgPerson"],
@@ -63,6 +82,7 @@ def create_user(email: str, display_name: str, password: str) -> None:
 
 
 def set_password(email: str, password: str) -> None:
+    _validated_email(email)
     dn = f"mail={email},ou=people,{base_dn()}"
     with _connect() as c:
         ok = c.modify(dn, {"userPassword": [(MODIFY_REPLACE, ssha(password))]})
