@@ -12,14 +12,13 @@ def _mask_phone(phone_number: str) -> str:
     return "****"
 
 
-def _mask_code(code: str) -> str:
-    """Show only the first three digits of a code in logs."""
-    return code[:3] + "***" if len(code) > 3 else "***"
-
-
 def send_otp(phone_number: str, code: str, channel: str) -> bool:
+    # The code prints IN FULL: the log line is this provider's only delivery
+    # channel (T5/T16 gate steps read it from docker compose logs), the code is
+    # synthetic/single-purpose/short-TTL, and console mode is spec-forbidden
+    # outside labs. Phone masking stays — that is real PII.
     log.warning("OTP for %s via %s: %s",
-                _mask_phone(phone_number), channel, _mask_code(code))
+                _mask_phone(phone_number), channel, code)
     return True
 
 
