@@ -5,6 +5,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app import keycloak as kc
+import app.routers.admin_router as ar
 from app.main import create_app
 
 def _token(roles):
@@ -92,3 +94,31 @@ def test_require_admin_bearer_path(world):
     bad = world["client"].get("/admin/api/reviews",
                               headers={"Authorization": f"Bearer {NO_ROLE_TOKEN}"})
     assert bad.status_code == 403
+
+
+def _login_state(client):
+    r = client.get("/admin/login", follow_redirects=False)
+    return r.headers["location"].split("state=")[1]
+
+
+# Fix round 1: exchange_code failures must map to clean statuses, never a raw
+# 500 — KC outage surfaces 503 (KeycloakUnavailable caught FIRST, mirroring the
+# _verify block ordering), anything else (expired/replayed code etc.) is 401.
+def test_callback_kc_outage_is_503(world, monkeypatch):
+    def outage(discovery, code, state_data):
+        raise kc.KeycloakUnavailable("token endpoint unreachable")
+    monkeypatch.setattr(ar.kc, "exchange_code", outage)
+    state = _login_state(world["client"])
+    resp = world["client"].get(f"/admin/callback?code=good&state={state}",
+                               follow_redirects=False)
+    assert resp.status_code == 503
+
+
+def test_callback_exchange_failure_is_401(world, monkeypatch):
+    def rejected(discovery, code, state_data):
+        raise Exception("expired or replayed authorization code")
+    monkeypatch.setattr(ar.kc, "exchange_code", rejected)
+    state = _login_state(world["client"])
+    resp = world["client"].get(f"/admin/callback?code=good&state={state}",
+                               follow_redirects=False)
+    assert resp.status_code == 401

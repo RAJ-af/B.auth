@@ -35,7 +35,10 @@ def _has_admin_role(claims: dict) -> bool:
 def _session_from_cookie(request: Request) -> dict | None:
     sid = request.cookies.get(ADMIN_COOKIE)
     s = _sessions.get(sid or "")
-    if not s or time.time() - s["t"] > ADMIN_SESSION_TTL_SECONDS:
+    if not s:
+        return None
+    if time.time() - s["t"] > ADMIN_SESSION_TTL_SECONDS:
+        _sessions.pop(sid, None)     # expired entry must not linger forever
         return None
     return s | {"sid": sid}
 
@@ -60,8 +63,10 @@ def require_admin(request: Request) -> dict:
     return sess["claims"]
 
 
-def csrf_token_for(sid: str) -> str:
-    return _sessions[sid]["csrf"]
+def csrf_token_for(sid: str) -> str | None:
+    """Safe lookup — None on unknown/expired sid; callers guard."""
+    s = _sessions.get(sid)
+    return None if not s else s["csrf"]
 
 
 def check_csrf(request: Request, form_field_value: str | None) -> None:
@@ -94,7 +99,12 @@ def admin_callback(code: str = "", state: str = ""):
         raise HTTPException(400, "unknown or expired login state")
     s = get_settings()
     discovery = kc.get_discovery()
-    tokens = kc.exchange_code(discovery, code, st)
+    try:
+        tokens = kc.exchange_code(discovery, code, st)
+    except kc.KeycloakUnavailable as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:                      # AuthError etc.
+        raise HTTPException(401, f"code exchange failed: {e}")
     try:
         claims = _verify(tokens["access_token"])
     except Exception as e:

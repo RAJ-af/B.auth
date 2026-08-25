@@ -86,7 +86,7 @@ $KCADM create roles -r "$KC_REALM" -s name=sovereign-admin \
 ADMIN_UID=$($KCADM get users -r "$KC_REALM" -q username="$SOVEREIGN_ADMIN_USER" \
   --fields id --format csv --noquotes | tail -1)
 if [ -n "${ADMIN_UID}" ] && [ "${ADMIN_UID}" != "id" ]; then
-  $KCADM add-roles -r "$KC_REALM" --uid "${ADMIN_UID}" --rname sovereign-admin >/dev/null 2>&1 \
+  $KCADM add-roles -r "$KC_REALM" --uid "${ADMIN_UID}" --rolename sovereign-admin >/dev/null 2>&1 \
     || echo "role mapping present or user pending first LDAP login"
 else
   echo "NOTE: ${SOVEREIGN_ADMIN_USER} not yet imported from LDAP; run this seed again after their first login"
