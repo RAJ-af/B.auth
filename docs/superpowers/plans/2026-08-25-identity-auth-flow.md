@@ -767,7 +767,11 @@ log = logging.getLogger("otp.console")
 
 
 def send_otp(phone_number: str, code: str, channel: str) -> bool:
-    log.warning("OTP for %s via %s: %s", phone_number, channel, code)
+    # T5-gate ruling (ledger 2026-08-25): phone stays masked (real PII); the
+    # CODE prints in full — this log line is the dev-only provider's delivery
+    # channel, and a masked code makes lab signups undeliverable.
+    log.warning("OTP for %s via %s: %s", _mask_phone(phone_number), channel,
+                code)
     return True
 
 
