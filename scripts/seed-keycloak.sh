@@ -80,4 +80,16 @@ $KCADM create "user-storage/${CID_LDAP}/sync?action=triggerFullSync&parent=${RID
 # scripts/kc_browserless_login.py completes the enrollment form with the known
 # TEST_TOTP_SECRET_* from .env on first login per user (form-driven, no ROPC).
 
+# --- sovereign-admin dashboard role (identity-auth-flow spec §11) -------------
+$KCADM create roles -r "$KC_REALM" -s name=sovereign-admin \
+  -s 'description=Admin dashboard access' >/dev/null || echo "role exists"
+ADMIN_UID=$($KCADM get users -r "$KC_REALM" -q username="$SOVEREIGN_ADMIN_USER" \
+  --fields id --format csv --noquotes | tail -1)
+if [ -n "${ADMIN_UID}" ] && [ "${ADMIN_UID}" != "id" ]; then
+  $KCADM add-roles -r "$KC_REALM" --uid "${ADMIN_UID}" --rname sovereign-admin >/dev/null 2>&1 \
+    || echo "role mapping present or user pending first LDAP login"
+else
+  echo "NOTE: ${SOVEREIGN_ADMIN_USER} not yet imported from LDAP; run this seed again after their first login"
+fi
+
 echo "Keycloak seeded. Realm: $KC_REALM"

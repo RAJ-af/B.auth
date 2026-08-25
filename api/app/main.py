@@ -13,11 +13,12 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     from app.routers import auth_router, emails_router, send_router
-    from app.routers import signup_router
+    from app.routers import signup_router, admin_router
     app.include_router(auth_router.router)
     app.include_router(emails_router.router)
     app.include_router(send_router.router)
     app.include_router(signup_router.router)
+    app.include_router(admin_router.router)
 
     return app
 
