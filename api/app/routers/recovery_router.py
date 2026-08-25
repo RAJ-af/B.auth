@@ -55,9 +55,11 @@ def verify(body: CodeBody):
 
 @router.post("/family-approve")
 def fam_approve(body: ApproveBody, user: dict = Depends(get_current_user)):
-    if not rc.family_approve(user["email"], body.requester_email.lower()):
-        raise HTTPException(404, "no such request")
-    return {"ok": True}
+    # R7 wire silence: standing vs non-standing (and every other refusal)
+    # answer with the SAME constant body as the rest of recovery — the member
+    # learns the outcome through the recovery flow, never from this endpoint.
+    rc.family_approve(user["email"], body.requester_email.lower())
+    return OK_BODY
 
 
 @router.post("/complete")

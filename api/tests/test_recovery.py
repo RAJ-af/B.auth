@@ -61,8 +61,19 @@ def w(monkeypatch):
     monkeypatch.setattr(rc.otp_service, "verify_challenge", fake_verify)
     monkeypatch.setattr(rc, "_phone_for",
                         lambda e: "+seed-" + e.split("@")[0])
-    monkeypatch.setattr(rc.family, "active_links_for",
-                        lambda e: [l for l in links if l["member_of"] == e])
+    # R7: fake returns PRODUCTION-SHAPED rows (link_id/requester_email/
+    # target_email/status/usable_at_ts). Each fixture entry {"member_of": e,
+    # "partner": p} models one usable link between e and p; partner is optional
+    # because existence-only tests (branch pick, expiry) never name it.
+    def fake_active_links(e):
+        return [{"link_id": i,
+                 "requester_email": e,
+                 "target_email": l.get("partner"),
+                 "status": "approved",
+                 "usable_at_ts": clock["t"]}
+                for i, l in enumerate(links, start=1)
+                if l["member_of"] == e]
+    monkeypatch.setattr(rc.family, "active_links_for", fake_active_links)
     monkeypatch.setattr(dv, "resolve", lambda raw: None)
     monkeypatch.setattr(rc.notifications, "notify",
                         lambda e, t, b: events.append(("note", e, t)))
@@ -172,7 +183,9 @@ def ttl_seconds():
 
 
 def test_family_approve_unlocks_completion(w):
-    w["links"].append({"member_of": "alice@sovereign.mail"})
+    # R7: the approving member must be a genuine party to a usable link.
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "member@sovereign.mail"})
     out = rc.start_recovery("alice@sovereign.mail", None)
     rc.verify_otp("alice@sovereign.mail", "123456")
     assert rc.family_approve("member@sovereign.mail", "alice@sovereign.mail")
@@ -180,6 +193,20 @@ def test_family_approve_unlocks_completion(w):
     status, code = rc.maybe_complete("alice@sovereign.mail",
                                      "new-password-long", None)
     assert (status, code) == ("completed", 201)
+
+
+def test_family_approve_without_standing_changes_nothing(w):
+    """R7 pinning: a member with no link to the requester is refused BEFORE any
+    state is touched — the window stays open for someone who does have standing."""
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "relative@sovereign.mail"})
+    out = rc.start_recovery("alice@sovereign.mail", None)
+    rc.verify_otp("alice@sovereign.mail", "123456")
+    assert out["status"] == "pending_family"
+    assert rc.family_approve("mallory@sovereign.mail",
+                             "alice@sovereign.mail") is False
+    assert out["status"] == "pending_family"          # untouched
+    assert out["decided_by"] is None                  # nothing was written
 
 
 def test_delete_device_voids_pending_dwell(w, monkeypatch):

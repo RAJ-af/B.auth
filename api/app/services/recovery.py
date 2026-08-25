@@ -176,15 +176,33 @@ def verify_otp(email: str, code: str) -> str:
     return r["status"]
 
 
+def _is_linked_member(member: str, requester: str) -> bool:
+    """R7 standing: the caller must be a party to one of the requester's
+    USABLE links — active_links_for already applies the cooldown filter, so
+    cooling-down links cannot approve."""
+    return any(member in (l.get("requester_email"), l.get("target_email"))
+               for l in family.active_links_for(requester))
+
+
 def family_approve(member_email: str, requester_email: str) -> bool:
-    r = _active_for(requester_email)
+    """False means 'nothing changed' — standing is checked BEFORE any state
+    touch and the router answers both outcomes with one constant body (R7,
+    wire silence mirroring R5)."""
+    member = member_email.lower()
+    requester = requester_email.lower()
+    # member == requester is refused outright: a requester sitting on ANY link
+    # would otherwise trivially self-approve their own window, defeating the
+    # two-party control the family branch exists to provide.
+    if member == requester or not _is_linked_member(member, requester):
+        return False
+    r = _active_for(requester)
     if not r or r["status"] != "pending_family":
         return False
     if time.time() > r["expires_at"]:
         r |= {"status": "expired"}               # lazy flip on touch
         _save(r)
         return False
-    r |= {"status": "authorized", "decided_by": member_email,
+    r |= {"status": "authorized", "decided_by": member,
           "authorized_at_ts": time.time()}
     _save(r)
     return True
