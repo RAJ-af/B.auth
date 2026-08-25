@@ -1,5 +1,45 @@
+"""Application settings + the U2 host-import guard.
+
+The guard below is STRUCTURAL, not social: importing app.* outside a container
+once dumped the whole lab .env through a ValidationError (Settings extra=forbid
+discovers a repo-root .env), forcing two full secret-rotation cycles — see
+progress.md's U2 arc. Containers are detected via /.dockerenv; the pytest suite
+is exempt because tests legitimately import app.* on the host.
+"""
+import os
+import sys
+from pathlib import Path
+
 from functools import lru_cache
 from pydantic_settings import BaseSettings
+
+GUARD_ENV_OVERRIDE = "SOVEREIGN_ALLOW_HOST_SETTINGS"
+
+def _host_settings_import_blocked(dockerenv_path: str = "/.dockerenv",
+                                  modules=None) -> bool:
+    """True when Settings would load on a host checkout (the leak vector).
+
+    Injectable parameters exist purely for regression tests; real calls probe
+    the live filesystem and sys.modules.
+    """
+    if Path(dockerenv_path).exists():
+        return False                       # inside a container: normal case
+    modules = sys.modules if modules is None else modules
+    if "pytest" in modules:
+        return False                       # local test suite imports by design
+    return os.environ.get(GUARD_ENV_OVERRIDE) != "1"
+
+def _enforce_host_import_guard() -> None:
+    if _host_settings_import_blocked():
+        raise RuntimeError(
+            "Refusing to load app settings OUTSIDE a container. "
+            "Settings(extra='forbid') discovers a repository .env on a host "
+            "checkout and echoes every secret in its validation error "
+            "(the overnight U2 incident class). Run this code inside a "
+            f"container, under pytest, or set {GUARD_ENV_OVERRIDE}=1 "
+            "deliberately.")
+
+_enforce_host_import_guard()
 
 class Settings(BaseSettings):
     keycloak_base_url: str = "http://keycloak:8080"
