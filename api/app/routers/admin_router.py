@@ -6,15 +6,22 @@ Session model is deliberately the SAME in-memory shape as keycloak.LoginStateSto
 """
 import secrets
 import time
+from pathlib import Path
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 
 from .. import keycloak as kc
 from ..auth import get_verifier
 from ..config import get_settings
+from ..services import idverify as idv
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+_templates = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parents[2] / "templates"))
 
 _sessions: dict[str, dict] = {}        # sid -> {claims, csrf, t}
 _login_states = kc.LoginStateStore(ttl_seconds=600)
@@ -78,7 +85,10 @@ def check_csrf(request: Request, form_field_value: str | None) -> None:
 @router.get("/login")
 def admin_login():
     s = get_settings()
-    discovery = kc.get_discovery()
+    try:
+        discovery = kc.get_discovery()
+    except kc.KeycloakUnavailable as e:
+        raise HTTPException(503, str(e))
     state, nonce = secrets.token_urlsafe(16), secrets.token_urlsafe(16)
     verifier_plain = secrets.token_urlsafe(32)
     import base64, hashlib
@@ -98,7 +108,10 @@ def admin_callback(code: str = "", state: str = ""):
     if not st:
         raise HTTPException(400, "unknown or expired login state")
     s = get_settings()
-    discovery = kc.get_discovery()
+    try:
+        discovery = kc.get_discovery()
+    except kc.KeycloakUnavailable as e:
+        raise HTTPException(503, str(e))
     try:
         tokens = kc.exchange_code(discovery, code, st)
     except kc.KeycloakUnavailable as e:
@@ -129,9 +142,71 @@ def admin_logout(request: Request):
     return resp
 
 
-# PLACEHOLDER: Task 9 replaces this body with the real reviews listing.
-# Exists only so the bearer-gate test exercises require_admin on a live route;
-# without a route, /admin/api/reviews is a plain 404 and the gate never fires.
+def _page(request: Request, name: str, **ctx) -> HTMLResponse:
+    sess = _session_from_cookie(request)
+    ctx |= {"csrf": sess["csrf"], "claims_email":
+            (sess["claims"].get("email") if sess else "")}
+    return _templates.TemplateResponse(request, name, ctx)
+
+
+@router.get("", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
+def admin_home(request: Request):
+    sess = _session_from_cookie(request)
+    if not sess:
+        return RedirectResponse("/admin/login", status_code=302)
+    return _page(request, "admin/reviews.html", reviews=idv.list_pending())
+
+
+@router.get("/reviews/{review_id}", response_class=HTMLResponse)
+def review_detail(request: Request, review_id: int):
+    sess = _session_from_cookie(request)
+    if not sess:
+        return RedirectResponse("/admin/login", status_code=302)
+    rev = idv.get_review(review_id)
+    if not rev:
+        raise HTTPException(404, "no such review")
+    return _page(request, "admin/review_detail.html", review=rev)
+
+
+async def _urlencoded_form(request: Request) -> dict[str, str]:
+    """HTML <form> posts are application/x-www-form-urlencoded; parse them with
+    the stdlib. (starlette's request.form() refuses to run at all without the
+    python-multipart package — even for urlencoded bodies — a dependency we
+    deliberately do not carry.) Anything else parses as an empty form, which
+    check_csrf then rejects."""
+    ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if ctype != "application/x-www-form-urlencoded":
+        return {}
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    return {k: v[0] for k, v in
+            parse_qs(raw, keep_blank_values=True).items()}
+
+
+@router.post("/reviews/{review_id}/decide")
+async def review_decide(request: Request, review_id: int):
+    sess = _session_from_cookie(request)
+    if not sess:
+        return RedirectResponse("/admin/login", status_code=302)
+    form = await _urlencoded_form(request)
+    check_csrf(request, form.get("csrf"))
+    # Validate BEFORE dispatch: decide_review's ValueError must never reach a
+    # forged form field as a 500 — a bad decision is a client error (422).
+    decision = form.get("decision", "")
+    if decision not in ("approved", "rejected"):
+        raise HTTPException(422, "decision must be 'approved' or 'rejected'")
+    idv.decide_review(review_id, decision, sess["claims"]["email"])
+    return RedirectResponse("/admin", status_code=303)
+
+
 @router.get("/api/reviews")
-def admin_reviews_placeholder(claims: dict = Depends(require_admin)):
-    return {"reviews": []}
+def api_reviews(claims: dict = Depends(require_admin)):
+    return {"reviews": idv.list_pending()}
+
+
+@router.post("/api/reviews/{review_id}/approve")
+def api_approve(review_id: int, claims: dict = Depends(require_admin)):
+    """Scripted-approval path used by smoke-test; HTML flow stays CSRF-guarded."""
+    if not idv.decide_review(review_id, "approved", claims["email"]):
+        raise HTTPException(404, "no pending review with that id")
+    return {"ok": True}

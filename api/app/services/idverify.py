@@ -149,3 +149,41 @@ def _enqueue_review(email: str, payload: dict, *, reason: str,
                (email, payload_json, status, reason, error_detail)
                VALUES (%s, %s::jsonb, 'pending', %s, %s)""",
             (email, json.dumps(payload), reason, detail))
+
+
+# --- manual-review queue ------------------------------------------------------
+
+_MASKED_COLUMNS = """review_id, email, reason, status, error_detail,
+    payload_json->'document_type' AS document_type,
+    COALESCE(jsonb_array_length(payload_json->'identities'), 0) AS identities_count,
+    created_at"""
+
+
+def list_pending() -> list[dict]:
+    from ..db import many
+    return many(f"""SELECT {_MASKED_COLUMNS} FROM verification_reviews
+                    WHERE status='pending' ORDER BY created_at DESC""")
+
+
+def get_review(review_id: int) -> dict | None:
+    from ..db import one
+    return one(f"SELECT {_MASKED_COLUMNS} FROM verification_reviews "
+               "WHERE review_id=%s", (review_id,))
+
+
+def decide_review(review_id: int, decision: str, reviewer: str) -> bool:
+    if decision not in ("approved", "rejected"):
+        raise ValueError(decision)
+    from ..db import execute, one
+    r = one("SELECT email FROM verification_reviews WHERE review_id=%s AND "
+            "status='pending'", (review_id,))
+    if not r:
+        return False
+    execute("""UPDATE verification_reviews
+               SET status=%s, reviewed_by=%s, decided_at=now()
+               WHERE review_id=%s""", (decision, reviewer, review_id))
+    if decision == "approved":
+        execute("""UPDATE accounts SET tier='tier2_identity',
+                     verification='manual_verified', id_source='manual',
+                     updated_at=now() WHERE email=%s""", (r["email"],))
+    return True

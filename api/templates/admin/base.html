@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sovereign Mail — Admin</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <header><h1>Sovereign Mail Admin</h1>
+    {% if claims_email %}<span class="who">{{ claims_email }}</span>{% endif %}
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

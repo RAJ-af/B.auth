@@ -1,0 +1,16 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<h2>Identity reviews awaiting decision</h2>
+{% if not reviews %}<p>Queue empty.</p>{% endif %}
+<table>
+  <tr><th>ID</th><th>Email</th><th>Reason</th><th>Doc type</th><th>Identities</th><th>Created</th></tr>
+  {% for r in reviews %}
+  <tr>
+    <td><a href="/admin/reviews/{{ r.review_id }}">{{ r.review_id }}</a></td>
+    <td>{{ r.email }}</td><td>{{ r.reason }}</td>
+    <td>{{ r.document_type }}</td><td>{{ r.identities_count }}</td>
+    <td>{{ r.created_at }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

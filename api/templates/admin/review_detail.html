@@ -1,0 +1,16 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<h2>Review {{ review.review_id }} — {{ review.email }}</h2>
+<p>Reason: <b>{{ review.reason }}</b>
+   {% if review.error_detail %}(detail: {{ review.error_detail }}){% endif %}</p>
+<p>Document type: {{ review.document_type }} · Identities: {{ review.identities_count }}</p>
+{% if review.status == 'pending' %}
+<form method="post" action="/admin/reviews/{{ review.review_id }}/decide">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button name="decision" value="approved">Approve Tier 2</button>
+  <button name="decision" value="rejected">Reject</button>
+</form>
+{% else %}<p>Decision: <b>{{ review.status }}</b> by {{ review.reviewed_by }}
+           at {{ review.decided_at }}</p>{% endif %}
+<p><a href="/admin">← back to queue</a></p>
+{% endblock %}

@@ -54,6 +54,13 @@ def world(monkeypatch):
         return f"http://kc/authorize?state={state}"
     monkeypatch.setattr(ar.kc, "build_authorize_url", fake_authorize)
 
+    # The real /admin/api/reviews route (Task 9) reads Postgres, which host-side
+    # tests cannot reach. Stub the read path here; the queue fixture below
+    # overrides the idverify service functions directly, so this only backs the
+    # bearer-gate smoke test on the empty queue.
+    import app.db as appdb
+    monkeypatch.setattr(appdb, "many", lambda q, p=(): [])
+
     return {"client": TestClient(create_app()), "sessions": sessions}
 
 
@@ -122,3 +129,107 @@ def test_callback_exchange_failure_is_401(world, monkeypatch):
     resp = world["client"].get(f"/admin/callback?code=good&state={state}",
                                follow_redirects=False)
     assert resp.status_code == 401
+
+
+# Fold-in from T8 review: kc.get_discovery() calls inside admin_login and
+# admin_callback are unguarded against a KC outage -> raw 500. Both must map
+# KeycloakUnavailable to 503, same pattern as the exchange_code wrap.
+def test_login_kc_outage_is_503(world, monkeypatch):
+    def outage():
+        raise kc.KeycloakUnavailable("discovery endpoint unreachable")
+    monkeypatch.setattr(ar.kc, "get_discovery", outage)
+    r = world["client"].get("/admin/login", follow_redirects=False)
+    assert r.status_code == 503
+
+
+def test_callback_kc_discovery_outage_is_503(world, monkeypatch):
+    state = _login_state(world["client"])
+
+    def outage():
+        raise kc.KeycloakUnavailable("discovery endpoint unreachable")
+    monkeypatch.setattr(ar.kc, "get_discovery", outage)
+    resp = world["client"].get(f"/admin/callback?code=good&state={state}",
+                               follow_redirects=False)
+    assert resp.status_code == 503
+
+
+def _login(world):
+    r = world["client"].get("/admin/login", follow_redirects=False)
+    state = r.headers["location"].split("state=")[1]
+    cb = world["client"].get(f"/admin/callback?code=good&state={state}",
+                             follow_redirects=False)
+    sid = cb.headers["set-cookie"].split("admin_session=")[1].split(";")[0]
+    return sid, world["sessions"][sid]["csrf"]
+
+
+def test_csrf_required_for_html_posts(world):
+    """(Relocated here from Task 8 — the decide ROUTE must exist to observe 403.)"""
+    sid, csrf = _login(world)
+    r = world["client"].post("/admin/reviews/1/decide",
+                             data={"decision": "approve"},
+                             cookies={"admin_session": sid})
+    assert r.status_code == 403
+    r2 = world["client"].post("/admin/reviews/1/decide",
+                              data={"decision": "approve", "csrf": csrf},
+                              cookies={"admin_session": sid})
+    assert r2.status_code != 403
+
+
+@pytest.fixture
+def queue(monkeypatch):
+    """In-memory stand-in for the review service storage. The row mirrors the
+    real _MASKED_COLUMNS shape — document_type plus an identities COUNT only;
+    raw payload keys never appear here (§10.2 masking guarantee)."""
+    rows = [{"review_id": 7, "email": "fam@sovereign.mail",
+             "reason": "policy_manual", "status": "pending",
+             "error_detail": None,
+             "document_type": "national_id",
+             "identities_count": 3,
+             "created_at": "2026-08-25T10:00:00Z"}]
+
+    import app.services.idverify as iv
+    monkeypatch.setattr(iv, "list_pending", lambda: rows)
+    monkeypatch.setattr(iv, "get_review",
+                        lambda rid: next((r for r in rows
+                                          if r["review_id"] == rid), None))
+    def decide(rid, decision, reviewer):
+        for r in rows:
+            if r["review_id"] == rid and r["status"] == "pending":
+                r["status"] = decision
+                r["reviewed_by"] = reviewer
+                return True
+        return False
+    monkeypatch.setattr(iv, "decide_review", decide)
+    return rows
+
+
+def test_queue_page_lists_pending_with_masks(world, queue):
+    sid, _ = _login(world)
+    html = world["client"].get("/admin", cookies={"admin_session": sid}).text
+    assert "fam@sovereign.mail" in html and "policy_manual" in html
+    assert "AB1234567" not in html          # raw numbers never reach templates
+
+
+def test_decide_requires_csrf_then_flips_status(world, queue):
+    sid, csrf = _login(world)
+    r = world["client"].post("/admin/reviews/7/decide",
+                             data={"decision": "approved"},
+                             cookies={"admin_session": sid}, follow_redirects=False)
+    assert r.status_code == 403
+    r2 = world["client"].post("/admin/reviews/7/decide",
+                              data={"decision": "approved", "csrf": csrf},
+                              cookies={"admin_session": sid}, follow_redirects=False)
+    assert r2.status_code == 303
+    assert queue[0]["status"] == "approved"
+
+
+def test_json_api_bearer_path(world, queue):
+    r = world["client"].get("/admin/api/reviews",
+                            headers={"Authorization": f"Bearer {ROLE_TOKEN}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["reviews"][0]["email"] == "fam@sovereign.mail"
+    # masked columns ONLY — §10.2 forbids payload passthrough:
+    assert set(body["reviews"][0]) <= {
+        "review_id", "email", "reason", "status", "error_detail",
+        "document_type", "identities_count", "created_at"}
