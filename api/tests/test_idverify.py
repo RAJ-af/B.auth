@@ -1,6 +1,8 @@
 """Runner honors the frozen contract exactly as §10.1 states."""
 import json
 import os
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -16,26 +18,31 @@ posix_e2e = pytest.mark.skipif(
     reason="end-to-end runner proof needs a POSIX host with the repo checkout")
 
 
-def _e2e_settings(monkeypatch):
+def _e2e_settings(monkeypatch, timeout):
     monkeypatch.setattr(iv, "get_settings", lambda: type("S", (), {
         "idverify_script": str(MOCK_SCRIPT),
-        "idverify_timeout_seconds": 1})())
+        "idverify_timeout_seconds": timeout})())
 
 
 def _run(monkeypatch, mode, payload=None, **run_kwargs):
     calls = {}
-    def fake_run(cmd, input=None, capture_output=True, text=True, timeout=None):
-        calls["timeout"] = timeout
+    def fake_popen(cmd, *a, **k):
         class R:
-            returncode = fake_run.rc
-            stdout = fake_run.out
-            stderr = ""
+            stdin = stdout = stderr = None
+            pid = 2 ** 30        # beyond any pid_max: killpg no-ops as ESRCH
+            returncode = fake_popen.rc
+            def communicate(self, input=None, timeout=None):
+                calls["timeout"] = timeout
+                if fake_popen.hang:
+                    raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+                return fake_popen.out, ""
         return R()
-    fake_run.rc = run_kwargs.get("rc", 0)
-    fake_run.out = run_kwargs.get("out") or json.dumps(
+    fake_popen.rc = run_kwargs.get("rc", 0)
+    fake_popen.hang = run_kwargs.get("hang", False)
+    fake_popen.out = run_kwargs.get("out") or json.dumps(
         {"contract_version": 1, "verified": False, "identities": [],
          "warnings": []})
-    monkeypatch.setattr(iv.subprocess, "run", fake_run)
+    monkeypatch.setattr(iv.subprocess, "Popen", fake_popen)
     # Patch where get_settings is USED (bound into iv's namespace by
     # `from ..config import get_settings`); patching app.config would leave
     # the real settings live under tests.
@@ -71,15 +78,52 @@ def test_garbage_stdout_is_infra_error(monkeypatch):
         _run(monkeypatch, "garbage", out="not json at all")
 
 
+def test_valid_json_but_not_object_is_infra_error(monkeypatch):
+    # null/[1,2]/42/"s" parse fine but would explode later on out.get(...)
+    # as AttributeError -> user-facing 500; the runner must fence them.
+    for blob in ("null", "[1, 2]", "42", "\"s\""):
+        with pytest.raises(iv.IdverifyInfraError, match="not a JSON object"):
+            _run(monkeypatch, "x", out=blob)
+
+
+def test_coerced_contract_version_is_infra_error(monkeypatch):
+    # True == 1 and 1.0 == 1 under ==/!=; the frozen contract wants the
+    # integer literal, so the check is identity-based.
+    for blob in ('{"contract_version": true}', '{"contract_version": 1.0}'):
+        with pytest.raises(iv.IdverifyInfraError, match="contract_version"):
+            _run(monkeypatch, "x", out=blob)
+
+
 def test_timeout_is_infra_error(monkeypatch):
-    import subprocess
-    def boom(*a, **k):
-        raise subprocess.TimeoutExpired(cmd="x", timeout=20)
-    monkeypatch.setattr(iv.subprocess, "run", boom)
+    def fake_popen(*a, **k):
+        class R:
+            stdin = stdout = stderr = None
+            pid = 2 ** 30           # no such process group: killpg no-ops
+            returncode = None
+            attempts = 0
+            def communicate(self, input=None, timeout=None):
+                R.attempts += 1
+                if R.attempts == 1:          # first wait: the hang
+                    raise subprocess.TimeoutExpired(cmd="x", timeout=20)
+                return "", ""                # post-SIGKILL reap
+        return R()
+    monkeypatch.setattr(iv.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(iv, "get_settings", lambda: type(
         "S", (), {"idverify_script": "/v.sh", "idverify_timeout_seconds": 20})())
     with pytest.raises(iv.IdverifyInfraError, match="timed out"):
         iv.run_auto_check({"contract_version": 1})
+
+
+def test_warning_echo_is_token_filtered():
+    # Only ^[a-z0-9_]{1,40}$ warnings may reach reason_detail (which lands in
+    # the signup response body); everything hostile degrades to "unspecified".
+    o = iv.map_result({"verified": False, "identities": [],
+                       "warnings": ["upstream_infrastructure_error",
+                                    "<script>alert(1)</script>", "A" * 100,
+                                    None, 7]},
+                      email="n@sovereign.mail")
+    assert o.reason_detail == \
+        "verifier said no (upstream_infrastructure_error)"
 
 
 def test_tri_state_mapping():
@@ -120,7 +164,9 @@ def test_e2e_real_script_verified_single(monkeypatch):
     # Proves the argv payload passthrough survives the real bash -> heredoc ->
     # python3 pipeline: the submitted document_type/full_name come back in a
     # masked identity, and exit 0 is parsed as a RESULT, not an error.
-    _e2e_settings(monkeypatch)
+    # Ceiling is production-like: success path must never approach it, and
+    # process spawn on constrained hosts (PRoot/ARM) can cost ~1-2s.
+    _e2e_settings(monkeypatch, timeout=20)
     monkeypatch.setenv("MOCK_IDVERIFY_MODE", "verified_single")
     out = iv.run_auto_check(dict(_E2E_PAYLOAD))
     assert out["verified"] is True
@@ -131,13 +177,59 @@ def test_e2e_real_script_verified_single(monkeypatch):
 
 
 @posix_e2e
-def test_e2e_hung_verifier_is_killed_as_infra_error(monkeypatch):
-    # REAL kill-path evidence: MOCK_IDVERIFY_MODE=slow sleeps 120s inside the
-    # child; subprocess.run(timeout=1) must terminate and reap it. Reaching the
-    # assertion below proves TimeoutExpired was raised by the actual subprocess
-    # machinery and mapped to IdverifyInfraError — this whole test finishes in
-    # ~1s instead of hanging for 120s.
-    _e2e_settings(monkeypatch)
+def test_e2e_mock_slow_mode_times_out_as_infra_error(monkeypatch):
+    # The mock's slow branch sleeps 120s inside the child; the runner's
+    # ceiling must surface as IdverifyInfraError, never as a raw TimeoutExpired.
+    # 10s >> spawn latency on constrained hosts yet << the 120s sleep, so the
+    # timeout is still guaranteed to fire.
+    _e2e_settings(monkeypatch, timeout=10)
     monkeypatch.setenv("MOCK_IDVERIFY_MODE", "slow")
     with pytest.raises(iv.IdverifyInfraError, match="timed out"):
         iv.run_auto_check({"contract_version": 1})
+
+
+@posix_e2e
+def test_e2e_timeout_kills_whole_process_tree(monkeypatch, tmp_path):
+    """REAL TREE-death proof. The verifier forks a grandchild that records its
+    pid in $GUARD then sleeps 120s alongside its 120s-sleeping parent bash.
+    After the runner's 1s timeout BOTH must be gone — the pre-Popen runner
+    left exactly such grandchildren orphaned (ppid=1) past 80s."""
+    script = tmp_path / "hung-verifier.sh"
+    script.write_text(
+        '#!/usr/bin/env bash\n'
+        "python3 -c \"import os, pathlib, time;"
+        "pathlib.Path(os.environ['GUARD']).write_text(str(os.getpid()));"
+        "time.sleep(120)\" &\n"
+        "sleep 120\n")
+    script.chmod(0o755)
+    guard = tmp_path / "guard.pid"
+    monkeypatch.setenv("GUARD", str(guard))
+    monkeypatch.setattr(iv, "get_settings", lambda: type("S", (), {
+        "idverify_script": str(script),
+        # 6s: comfortably above process-spawn latency on constrained hosts
+        # (PRoot/ARM measured ~1-2s) so the grandchild always gets to record
+        # its pid, yet far below the 120s sleeps, so the kill still fires.
+        "idverify_timeout_seconds": 6})())
+    with pytest.raises(iv.IdverifyInfraError, match="timed out"):
+        iv.run_auto_check({"contract_version": 1})
+    # The grandchild had the whole ceiling window to record its pid.
+    deadline = time.monotonic() + 5.0
+    while not guard.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert guard.exists(), "grandchild never wrote its pid"
+    pid = int(guard.read_text().strip())
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break                        # grandchild is gone: tree kill proven
+        time.sleep(0.05)
+    else:
+        # A SIGKILLed orphan can linger briefly as an unreaped zombie, for
+        # which os.kill(pid, 0) still succeeds; only that state counts as dead.
+        try:
+            stat = open(f"/proc/{pid}/stat", "rb").read()
+            state = stat.rsplit(b")", 1)[1].split()[0]
+        except OSError:
+            state = b"?"
+        assert state == b"Z", f"grandchild {pid} SURVIVED the process-group kill"
