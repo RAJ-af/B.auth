@@ -231,7 +231,7 @@ Append these fields INSIDE the existing `Settings` class (after `ca_cert_path`),
     otp_max_sends_per_hour: int = 3
     otp_max_verify_attempts: int = 5
     otp_daily_cap: int = 200
-    idverify_mode: str = "off"            # off | auto | manual
+    idverify_mode: Literal["off", "auto", "manual"] = "off"   # bad env fails at boot
     idverify_script: str = "/verify/mock-idverify.sh"
     idverify_timeout_seconds: int = 20
     family_link_cooldown_hours: int = 48
