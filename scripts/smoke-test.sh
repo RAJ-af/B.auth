@@ -287,7 +287,12 @@ for _ in $(seq 1 10); do
   sleep 1
 done
 [ -n "$FAM_FILE" ] || { echo "family notification email never landed"; exit 1; }
-if docker compose exec -T dovecot sh -c 'grep -qiE "https\?://" '"$FAM_FILE"'; then echo URL; fi' | grep -q URL; then
+# Negative control is structural: no URL -> sh prints nothing -> gate passes.
+# The conditional MUST live inside sh -c (an if-less then/fi is a syntax error
+# whose empty output would silently pass); "$1" keeps the path out of the
+# quoted script text entirely.
+if docker compose exec -T dovecot sh -c \
+     'if grep -qiE "https?://" "$1"; then echo URL; fi' sh "$FAM_FILE" | grep -q URL; then
   echo "POINTER-ONLY VIOLATION: URL in family email ($FAM_FILE)"; exit 1
 fi
 

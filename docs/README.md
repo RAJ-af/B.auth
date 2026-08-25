@@ -36,7 +36,14 @@ until curl -so /dev/null http://localhost:8080/; do sleep 5; done
 ./scripts/seed-keycloak.sh                   # realm, PKCE client, LDAP federation
 ./scripts/gen-dkim.sh                        # starts rspamd itself; writes docs/dns-records.txt
 
-# 5. everything else
+# 5. everything else — AFTER setting the phase-5 smoke overrides below
+#    (the identity gate hard-requires manual idverify + cooldown-free family
+#    links + a 5 s dwell; production defaults are off/48h/600s, see §8/§10)
+for kv in IDVERIFY_MODE=manual FAMILY_LINK_COOLDOWN_HOURS=0 \
+          RECOVERY_MIN_DWELL_SECONDS=5; do
+  k=${kv%%=*}
+  grep -q "^$k=" .env && sed -i "s|^$k=.*|$kv|" .env || printf '%s\n' "$kv" >> .env
+done
 docker compose up -d --build
 sleep 15
 
@@ -47,8 +54,12 @@ sleep 15
 `smoke-test.sh` runs two real browser-less TOTP logins end-to-end via the API,
 audits Dovecot's advertised auth mechanisms, checks DKIM on stored mail,
 injects an inbound spam message through Postfix :25, verifies the external
-relay copy in Mailpit, and asserts secret hygiene (`.env` ignored/untracked,
-introspection secret absent from git history and image builds).
+relay copy in Mailpit, asserts secret hygiene (`.env` ignored/untracked,
+introspection secret absent from git history and image builds), and drives the
+identity subsystem end to end (signup → tiers → admin queue → family links →
+all three recovery outcomes). The three overrides from step 5 are SMOKE-TIME
+settings only; switch `IDVERIFY_MODE` back and restore the production cooldown/
+dwell defaults before any non-lab use (sections 8 and 10).
 
 ## 3. Trusting the internal CA (`rootCA.pem`)
 
