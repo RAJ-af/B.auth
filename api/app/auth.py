@@ -51,7 +51,19 @@ def get_current_user(request: Request) -> dict:
     raw_token = auth.removeprefix("Bearer ").strip()
     request.state.raw_token = raw_token   # consumed later by XOAUTH2 mail sessions
     try:
-        return get_verifier().verify(raw_token)
+        claims = get_verifier().verify(raw_token)
     except AuthError as e:
         raise HTTPException(e.status_code, e.detail,
                             headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+    # Every mail route binds user["email"] (routers, enforce_sender). A
+    # cryptographically valid token without the claim would otherwise surface as
+    # a raw 500 from dict indexing; the LDAP federation maps mail mandatorily so
+    # this is unreachable via supported flows, but fail as 401 here rather than
+    # trust that everywhere downstream. Single choke point: routers need no
+    # per-site .get() checks.
+    email = claims.get("email") if isinstance(claims, dict) else None
+    if not email:
+        log.warning("valid token rejected: no email claim (sub=%s)", claims.get("sub"))
+        raise HTTPException(401, "token missing required email claim",
+                            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+    return claims

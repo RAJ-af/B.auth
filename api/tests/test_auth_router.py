@@ -1,11 +1,13 @@
-import pytest
+import pytest, time
 from unittest.mock import patch
 from urllib.parse import urlparse, parse_qs
 from fastapi import Request
 from fastapi.testclient import TestClient
 from app.main import create_app
-from app.auth import get_current_user
+from app.auth import get_current_user, JWTVerifier
+from app import auth as auth_module
 from app import keycloak as kcm
+from tests.mock_jwks import make_jwks_server, mint
 
 DISC = {"authorization_endpoint": "http://kc.test/auth",
         "token_endpoint": "http://kc.test/token"}
@@ -70,3 +72,25 @@ def test_me_with_overridden_dependency():
     app = create_app(); override_user(app)
     r = TestClient(app).get("/me")
     assert r.status_code == 200 and r.json()["email"] == "bob@sovereign.mail"
+
+def test_token_without_email_claim_is_401_not_500(monkeypatch):
+    # Whole-branch review F7 hardening: every mail route binds user["email"].
+    # A cryptographically VALID RS256 token lacking the claim must fail as a
+    # clean 401 at the single choke point in get_current_user — never as a raw
+    # 500 from dict indexing inside a router. Real dependency path (mock JWKS,
+    # no dependency override) so the guard itself is what's under test.
+    h = make_jwks_server()
+    try:
+        iss = "http://kc.test/realms/sovereign"
+        monkeypatch.setattr(auth_module, "_verifier",
+                            JWTVerifier(iss, "sovereign-mail-api", jwks_url=h["url"]))
+        c = TestClient(create_app())
+        base = {"exp": int(time.time()) + 300, "iss": iss,
+                "aud": "sovereign-mail-api", "sub": "u-1"}
+        r = c.get("/me", headers={"Authorization": "Bearer " + mint(h, dict(base))})
+        assert r.status_code == 401 and "email claim" in r.json()["detail"]
+        ok = c.get("/me", headers={"Authorization": "Bearer " + mint(
+            h, {**base, "email": "a@sovereign.mail"})})
+        assert ok.status_code == 200 and ok.json()["email"] == "a@sovereign.mail"
+    finally:
+        h["server"].shutdown()
