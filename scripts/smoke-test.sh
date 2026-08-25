@@ -4,7 +4,8 @@
 # Covers: container health, sign_networks/subnet drift guard, no-plaintext-mech
 # audit, live API loop with real TOTP logins, DKIM on stored mail (header
 # section only), token-tagged inbound spam + same-run external relay copy,
-# DNS doc freshness, secret hygiene (all-objects history scan, fail-closed).
+# DNS doc freshness, secret hygiene (all-objects history scan, fail-closed),
+# and the identity subsystem (signup/tiers/admin queue/family/recovery).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source .env
@@ -152,4 +153,229 @@ grep -rqE "INTROSPECTION" api/Dockerfile mail/*/Dockerfile \
   && { echo "FAIL: secret referenced in an image build"; exit 1; }
 echo "secret hygiene ok"
 
+echo "== 9. identity subsystem: signup + tiers + admin queue + family + recovery =="
+# Phase-5 gate (identity-auth-flow spec §12). Needs the stack booted with the
+# smoke overrides exported BEFORE `docker compose up -d --build`:
+#     IDVERIFY_MODE=manual FAMILY_LINK_COOLDOWN_HOURS=0 RECOVERY_MIN_DWELL_SECONDS=5
+#
+# OTP extraction idiom: OTP_PROVIDER=console MASKS phone numbers in its log
+# lines ("OTP for +91****6670 via sms: 801037") — and distinct E.164 numbers
+# can mask identically (+918000000001 and +910000000001 both become
+# "+91****0001"). Codes are therefore located by ORDER, never by phone text:
+# snapshot the api log length, trigger exactly ONE send, then require exactly
+# one new console-OTP line past the snapshot.
+api_log_lines() { docker compose logs api 2>/dev/null | wc -l; }
+one_otp_after() {   # $1 = api_log_lines snapshot taken BEFORE the triggering send
+  local codes n
+  codes=$(docker compose logs api 2>/dev/null | tail -n +"$(( $1 + 1 ))" \
+          | sed -nE 's/^.*OTP for .* via sms: ([0-9]{6})$/\1/p')
+  n=$(printf '%s\n' "$codes" | grep -c . || true)
+  [ "$n" = "1" ] || { echo "expected exactly 1 new console OTP after mark $1, got $n"; exit 1; }
+  printf '%s\n' "$codes"
+}
+kc_token() {        # $1=username $2=password $3=totp-secret -> prints access token
+  python3 scripts/kc_browserless_login.py \
+    --base-url "http://localhost:${KEYCLOAK_PORT}" --realm "$KC_REALM" \
+    --client-id "$KC_APP_CLIENT" \
+    --redirect-uri "http://localhost:${API_PORT}/auth/callback" \
+    --username "$1" --password "$2" --totp-secret "$3" \
+    | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])'
+}
+SMOKE_PW="smoke-password-123"
+
+# --- 9a. signup, tier1 skip path (carol) --------------------------------------
+MARK=$(api_log_lines)
+curl -s -o /tmp/smoke-signup.json -w '%{http_code}' \
+  -X POST localhost:8000/signup/start -H 'content-type: application/json' \
+  -d '{"email":"carol@sovereign.mail","display_name":"Carol","phone_e164":"+918000000001","account_type":"independent"}' \
+  | grep -q '^202$' || { echo "signup/start carol"; exit 1; }
+TOK=$(python3 -c 'import json;print(json.load(open("/tmp/smoke-signup.json"))["session_token"])')
+OTP_CODE=$(one_otp_after "$MARK")
+curl -sf -X POST localhost:8000/signup/verify-otp -H 'content-type: application/json' \
+  -d "{\"token\":\"$TOK\",\"code\":\"$OTP_CODE\"}" >/dev/null || { echo "carol verify-otp"; exit 1; }
+curl -sf -X POST localhost:8000/signup/complete -H 'content-type: application/json' \
+  -d "{\"token\":\"$TOK\",\"choice\":{\"kind\":\"skip\"},\"password\":\"$SMOKE_PW\"}" \
+  | grep -q '"tier1_phone"' || { echo "carol tier1 complete"; exit 1; }
+# provisioned directory row carries an SSHA password hash (same admin bind DN
+# as seed-ldap.sh uses)
+docker compose exec -T openldap ldapsearch -x \
+  -b "ou=people,dc=${DOMAIN//./,dc=}" "(mail=carol@sovereign.mail)" userPassword \
+  -D "cn=admin,dc=${DOMAIN//./,dc=}" -w "$LDAP_ROOT_PASSWORD" 2>/dev/null \
+  | grep -q "{SSHA}" || { echo "carol LDAP row lacks SSHA hash"; exit 1; }
+
+# --- 9b. signup, MANUAL idverify round-trip (dave) ----------------------------
+# IDVERIFY_MODE=manual routes every submission to the operator queue; signup
+# itself still completes at tier1 with identity_status=queued_manual_review.
+MARK=$(api_log_lines)
+curl -s -o /tmp/smoke-signup.json -w '%{http_code}' \
+  -X POST localhost:8000/signup/start -H 'content-type: application/json' \
+  -d '{"email":"dave@sovereign.mail","display_name":"Dave","phone_e164":"+918000000002","account_type":"independent"}' \
+  | grep -q '^202$' || { echo "signup/start dave"; exit 1; }
+TOK2=$(python3 -c 'import json;print(json.load(open("/tmp/smoke-signup.json"))["session_token"])')
+CODE2=$(one_otp_after "$MARK")
+curl -sf -X POST localhost:8000/signup/verify-otp -H 'content-type: application/json' \
+  -d "{\"token\":\"$TOK2\",\"code\":\"$CODE2\"}" >/dev/null || { echo "dave verify-otp"; exit 1; }
+curl -sf -X POST localhost:8000/signup/complete -H 'content-type: application/json' \
+  -d "{\"token\":\"$TOK2\",\"choice\":{\"kind\":\"submit_id\",\"full_name\":\"Dave\",\"document_type\":\"national_id\",\"id_number\":\"XX999999\",\"consent_selfie\":true},\"password\":\"$SMOKE_PW\"}" \
+  | grep -q 'queued_manual_review' || { echo "dave manual queue body"; exit 1; }
+
+# --- 9c. admin dashboard over the bearer JSON route ---------------------------
+ADMIN_TOKEN=$(kc_token "$SOVEREIGN_ADMIN_USER" "$TEST_USER_PASSWORD" "$TEST_TOTP_SECRET_ADMIN") \
+  || { echo "admin KC login"; exit 1; }
+REV=$(curl -sf localhost:8000/admin/api/reviews -H "Authorization: Bearer $ADMIN_TOKEN") \
+  || { echo "admin reviews fetch"; exit 1; }
+printf '%s' "$REV" | grep -q dave@sovereign.mail || { echo "admin queue missing dave"; exit 1; }
+RID=$(printf '%s' "$REV" | python3 -c '
+import json,sys
+rs=[r for r in json.load(sys.stdin)["reviews"] if r["email"]=="dave@sovereign.mail"]
+assert rs, "no pending review for dave"
+print(rs[0]["review_id"])') || { echo "review id extraction"; exit 1; }
+curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8000/admin/api/reviews/$RID/approve" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" | grep -q '^200$' || { echo "review approve"; exit 1; }
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$SOVEREIGN_APP_DB" -tAc \
+  "SELECT tier||'/'||verification FROM accounts WHERE email='dave@sovereign.mail'" \
+  | grep -q "tier2_identity/manual_verified" || { echo "tier2 promotion"; exit 1; }
+
+# --- 9d. family links ----------------------------------------------------------
+CAROL_TOKEN=$(kc_token carol@sovereign.mail "$SMOKE_PW" "MFZWQ3DFOZQWS4ZA") \
+  || { echo "carol KC login"; exit 1; }
+DAVE_TOKEN=$(kc_token dave@sovereign.mail "$SMOKE_PW" "NBSWY3DPEHPK3PXP") \
+  || { echo "dave KC login"; exit 1; }
+ALICE_TOKEN=$(kc_token "$TEST_USER_ALICE" "$TEST_USER_PASSWORD" "$TEST_TOTP_SECRET_ALICE") \
+  || { echo "alice KC login"; exit 1; }
+# tier1 requester must be refused (family requests require tier2_identity)
+C=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/family/requests \
+      -H "Authorization: Bearer $CAROL_TOKEN" -H 'content-type: application/json' \
+      -d '{"target_email":"alice@sovereign.mail"}')
+[ "$C" = "422" ] || { echo "tier1 family request expected 422, got $C"; exit 1; }
+# dave (freshly promoted tier2) requests; CAROL approves her OWN incoming request
+LID=$(curl -sf -X POST localhost:8000/family/requests \
+        -H "Authorization: Bearer $DAVE_TOKEN" -H 'content-type: application/json' \
+        -d '{"target_email":"carol@sovereign.mail"}' \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin)["link_id"])') \
+  || { echo "family request dave->carol"; exit 1; }
+curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8000/family/requests/$LID/approve" \
+  -H "Authorization: Bearer $CAROL_TOKEN" | grep -q '^200$' || { echo "family approve carol"; exit 1; }
+# a second link dave<->alice so alice's recovery below branches pending_family;
+# alice approves from her own incoming queue like any member would
+LID2=$(curl -sf -X POST localhost:8000/family/requests \
+         -H "Authorization: Bearer $DAVE_TOKEN" -H 'content-type: application/json' \
+         -d "{\"target_email\":\"${TEST_USER_ALICE}\"}" \
+         | python3 -c 'import json,sys;print(json.load(sys.stdin)["link_id"])') \
+  || { echo "family request dave->alice"; exit 1; }
+APID=$(curl -sf localhost:8000/family/requests -H "Authorization: Bearer $ALICE_TOKEN" \
+       | python3 -c '
+import json,sys
+rs=[r for r in json.load(sys.stdin)["requests"] if r.get("requester_email")=="dave@sovereign.mail"]
+assert rs, "alice incoming family queue empty"
+print(rs[0]["link_id"])') || { echo "alice incoming queue read"; exit 1; }
+curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8000/family/requests/$APID/approve" \
+  -H "Authorization: Bearer $ALICE_TOKEN" | grep -q '^200$' || { echo "family approve alice"; exit 1; }
+# instant revoke probe: requester kills the dave<->carol link outright
+curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8000/family/requests/$LID/revoke" \
+  -H "Authorization: Bearer $DAVE_TOKEN" | grep -q '^200$' || { echo "family revoke"; exit 1; }
+
+# pointer-only guarantee (spec §12/§15.3): the notification reaches the LOCAL
+# recipient through our own postfix->dovecot path (mailpit only sees non-local
+# relay copies), names the event in its subject, and carries NO URL.
+FAM_FILE=""
+for _ in $(seq 1 10); do
+  FAM_FILE=$(docker compose exec -T dovecot sh -c \
+    'grep -rl "^Subject: Sovereign Mail: family link request" \
+       /var/mail/vhosts/'"${DOMAIN}"'/carol/Maildir/new/ /var/mail/vhosts/'"${DOMAIN}"'/carol/Maildir/cur/ 2>/dev/null | head -1')
+  [ -n "$FAM_FILE" ] && break
+  sleep 1
+done
+[ -n "$FAM_FILE" ] || { echo "family notification email never landed"; exit 1; }
+if docker compose exec -T dovecot sh -c 'grep -qiE "https\?://" '"$FAM_FILE"'; then echo URL; fi' | grep -q URL; then
+  echo "POINTER-ONLY VIOLATION: URL in family email ($FAM_FILE)"; exit 1
+fi
+
+# --- 9e. recovery pass 1: family branch (alice) --------------------------------
+APHONE=$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$SOVEREIGN_APP_DB" -tAc \
+  "SELECT phone_e164 FROM accounts WHERE email='${TEST_USER_ALICE}'")
+[ -n "$APHONE" ] || { echo "alice accounts row/phone missing (db-migrate backfill ran?)"; exit 1; }
+# anti-enumeration pin: ghost vs real start bodies must be BYTE-identical.
+# The real call doubles as the live request whose OTP is extracted next.
+A=$(curl -s -X POST localhost:8000/recovery/start -H 'content-type: application/json' \
+      -d '{"email":"ghost@sovereign.mail"}'; echo)
+MARK=$(api_log_lines)
+B=$(curl -s -X POST localhost:8000/recovery/start -H 'content-type: application/json' \
+      -d "{\"email\":\"${TEST_USER_ALICE}\"}"; echo)
+[ "$A" = "$B" ] || { echo "anti-enumeration bodies differ"; exit 1; }
+RCODE=$(one_otp_after "$MARK")
+STAGE=$(curl -sf -X POST localhost:8000/recovery/verify-otp -H 'content-type: application/json' \
+  -d "{\"email\":\"${TEST_USER_ALICE}\",\"code\":\"$RCODE\"}" \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["stage"])') \
+  || { echo "alice verify-otp call"; exit 1; }
+case "$STAGE" in
+  pending_family)
+    # smoke links are cooldown-free (FAMILY_LINK_COOLDOWN_HOURS=0), so the
+    # linked member authorizes immediately; R7 wire silence means this endpoint
+    # answers the constant body whatever it actually decided
+    curl -sf -X POST localhost:8000/recovery/family-approve \
+      -H "Authorization: Bearer $DAVE_TOKEN" -H 'content-type: application/json' \
+      -d "{\"requester_email\":\"${TEST_USER_ALICE}\"}" >/dev/null \
+      || { echo "recovery family-approve call"; exit 1; } ;;
+  *) echo "unexpected recovery stage for alice: $STAGE"; exit 1 ;;
+esac
+curl -sf -X POST localhost:8000/recovery/complete -H 'content-type: application/json' \
+  -d "{\"email\":\"${TEST_USER_ALICE}\",\"new_password\":\"recovered-pass-123\"}" \
+  | grep -q '"reset":true' || { echo "alice recovery complete"; exit 1; }
+# NOTE: alice's seeded TEST_USER_PASSWORD no longer authenticates after this —
+# the reset rewrote her LDAP password. Later phases must not re-login as alice.
+
+# --- 9f. recovery pass 2: device dwell branch (bob) ----------------------------
+BOB_TOKEN=$(kc_token "$TEST_USER_BOB" "$TEST_USER_PASSWORD" "$TEST_TOTP_SECRET_BOB") \
+  || { echo "bob KC login"; exit 1; }
+DEV=$(curl -sf -X POST localhost:8000/account/devices -H "Authorization: Bearer $BOB_TOKEN" \
+  -H 'content-type: application/json' -d '{"label":"smoke-dwell-device"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["device_id"])') \
+  || { echo "device registration"; exit 1; }
+MARK=$(api_log_lines)
+curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/recovery/start \
+  -H 'content-type: application/json' -H "X-Device-ID: $DEV" \
+  -d "{\"email\":\"${TEST_USER_BOB}\"}" | grep -q '^202$' || { echo "bob recovery start"; exit 1; }
+RCODE=$(one_otp_after "$MARK")
+STAGE=$(curl -sf -X POST localhost:8000/recovery/verify-otp -H 'content-type: application/json' \
+  -d "{\"email\":\"${TEST_USER_BOB}\",\"code\":\"$RCODE\"}" \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["stage"])') \
+  || { echo "bob verify-otp call"; exit 1; }
+case "$STAGE" in
+  pending_dwell) sleep 6 ;;   # RECOVERY_MIN_DWELL_SECONDS=5 override + margin
+  *) echo "unexpected recovery stage for bob: $STAGE"; exit 1 ;;
+esac
+# the SAME recognizing device must finish the wait (§13.6)
+curl -sf -X POST localhost:8000/recovery/complete -H 'content-type: application/json' \
+  -H "X-Device-ID: $DEV" \
+  -d "{\"email\":\"${TEST_USER_BOB}\",\"new_password\":\"bob-recovered-pass-123\"}" \
+  | grep -q '"reset":true' || { echo "bob recovery complete"; exit 1; }
+
+# --- 9g. recovery pass 3: pending_admin branch + assisted grant (carol) --------
+# No active link (hers was revoked above) and no registered device -> assisted
+# queue; the operator path is the bearer grant route from Task 14.
+MARK=$(api_log_lines)
+curl -s -o /dev/null -w '%{http_code}' -X POST localhost:8000/recovery/start \
+  -H 'content-type: application/json' \
+  -d '{"email":"carol@sovereign.mail"}' | grep -q '^202$' || { echo "carol recovery start"; exit 1; }
+RCODE=$(one_otp_after "$MARK")
+STAGE=$(curl -sf -X POST localhost:8000/recovery/verify-otp -H 'content-type: application/json' \
+  -d '{"email":"carol@sovereign.mail","code":"'"$RCODE"'"}' \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["stage"])') \
+  || { echo "carol verify-otp call"; exit 1; }
+case "$STAGE" in
+  pending_admin)
+    REQ_ID=$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$SOVEREIGN_APP_DB" -tAc \
+      "SELECT req_id FROM recovery_requests WHERE email='carol@sovereign.mail'
+       AND status='pending_admin' ORDER BY created_at DESC LIMIT 1" | tr -d '[:space:]')
+    [ -n "$REQ_ID" ] || { echo "no pending_admin recovery row for carol"; exit 1; }
+    curl -s -o /dev/null -w '%{http_code}' -X POST "localhost:8000/admin/api/recovery/$REQ_ID/grant" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" | grep -q '^200$' || { echo "admin grant"; exit 1; } ;;
+  *) echo "unexpected recovery stage for carol: $STAGE"; exit 1 ;;
+esac
+curl -sf -X POST localhost:8000/recovery/complete -H 'content-type: application/json' \
+  -d '{"email":"carol@sovereign.mail","new_password":"carol-recovered-pass"}' \
+  | grep -q '"reset":true' || { echo "carol recovery complete"; exit 1; }
+
+echo "identity subsystem ok"
 echo "SMOKE TEST PASSED"

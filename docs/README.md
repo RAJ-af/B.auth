@@ -182,6 +182,155 @@ Register (Phase 2 backlog)**. The load-bearing items:
 - **Known MVP gaps** (details in §8): Keycloak `start-dev`, self-signed CA,
   no quotas/rate limiting, in-memory callback state, metadata-only attachments.
 
+## 8. Self-service signup (`/signup/*`, spec §8)
+
+Three calls make an account: `POST /signup/start {email, display_name,
+phone_e164, account_type}` answers `202 {session_token}` and sends a 6-digit
+phone OTP; `POST /signup/verify-otp {token, code}` moves the session to
+`awaiting_identity_choice`; `POST /signup/complete {token, choice, password}`
+provisions the LDAP entry (`{SSHA}` hash) plus the accounts row and activates
+the mailbox. Signup sessions live 900 s; addresses are unique (409 on
+duplicates) with lowercase `[a-z0-9._-]` local parts under `$MAIL_DOMAIN`.
+Note the deliberate asymmetry: `/signup/start` DOES reveal address existence
+via 409 (accepted UX trade-off, spec §15.3) — anti-enumeration constants are a
+recovery-only rule.
+
+**Tiers.** Everyone starts at `tier1_phone` (verified phone,
+`verification=pending_identity`). A government-ID submission that verifies
+promotes to `tier2_identity` (`auto_verified` or, after dashboard review,
+`manual_verified`) — Tier 2 is what unlocks *initiating* family links.
+Skipping the ID costs nothing: it can be submitted later from account
+settings, and completion NEVER blocks on identity problems (soft-fallback
+union, spec §8.4).
+
+**`IDVERIFY_MODE`** lives in `.env` and is read at boot — change it, then
+`docker compose up -d --force-recreate api`:
+
+- `off` — ID submission disabled; choice descriptions say so
+  (`identity_checks_off`).
+- `auto` — `$IDVERIFY_SCRIPT` runs as a subprocess over the frozen versioned
+  contract (spec §10.1); well-formed-but-false is a RESULT, while verifier
+  trouble (timeout/bad JSON/crash) queues manual review instead of failing
+  signup.
+- `manual` — every submission lands in the admin queue with
+  `identity_status=queued_manual_review`; signup still completes immediately
+  at Tier 1.
+
+**Console-provider DEV warning.** `OTP_PROVIDER=console` prints OTP codes in
+full into `docker compose logs api` (phone masked, code visible — that is its
+only delivery channel). This is strictly a lab setting: before anything that
+resembles a shared machine, switch to `twilio` by filling the three `TWILIO_*`
+vars. Startup logs warn while console mode is selected (spec §9 warning box).
+
+## 9. Admin dashboard (`/admin`, spec §11)
+
+Access is the Keycloak realm role `sovereign-admin`; `seed-keycloak.sh`
+creates the role and assigns it to `$SOVEREIGN_ADMIN_USER`
+(`admin@sovereign.mail`) once seeding's full sync has imported that account
+from LDAP. Log in at `/admin/login`: you are redirected to Keycloak's normal
+PKCE + TOTP screen and return through `/admin/callback`, which exchanges the
+code, checks the role, and sets an opaque httpOnly `SameSite=Lax` session
+cookie (1 h TTL). Every HTML form posts back a per-session CSRF token.
+
+What the operator can do:
+
+- **Review queue** (`/admin`) lists pending identity submissions grouped by
+  reason; the detail page shows the payload snapshot. **Approve** promotes the
+  account to `tier2_identity` / `manual_verified` (`id_source=manual`);
+  **Reject** records the decision and leaves the account at Tier 1 — the
+  member may reapply. Decisions are attributed (`reviewed_by`) and stamped.
+- **Scripted equivalents** share the exact same guard:
+  `GET /admin/api/reviews` and `POST /admin/api/reviews/{id}/approve` with
+  `Authorization: Bearer <KC access token>` — how `smoke-test.sh` drives the
+  queue browserlessly. The HTML POST path stays CSRF-guarded and is covered
+  by pytest instead.
+- **Assisted-recovery grants**: a recovery parked at `pending_admin` (see
+  runbook below) is authorized by
+  `POST /admin/api/recovery/{req_id}/grant` (same bearer gate). Only
+  actionable requests grant; anything else answers one generic 404, so
+  scripted probes learn nothing about state.
+
+## 10. Recovery runbook (`/recovery/*`, spec §13)
+
+A recovery opens with `POST /recovery/start {email}`, which answers the
+byte-identical body `{"received":true}` whether or not the address exists
+(anti-enumeration; asserted every smoke run). A known address receives an OTP
+on its stored phone (budget: ≤3 starts/hour/account) plus a "recovery
+started" notification the owner can act on. After the OTP clears, the branch
+is picked ONCE, at verification time:
+
+| Stage | Meaning | What resolves it |
+|---|---|---|
+| `pending_family` | an active, cooled-down family link exists | any ONE linked member approves from their own session: `POST /recovery/family-approve {"requester_email":…}` |
+| `pending_dwell` | a recognized device vouched | the SAME device re-sends its `X-Device-ID` after `RECOVERY_MIN_DWELL_SECONDS` elapses |
+| `pending_admin` | neither factor — assisted queue | operator grant (dashboard/API, section 9) |
+
+All three converge on `POST /recovery/complete {email,new_password}` →
+`{"reset":true}`. Requests also die: family windows expire to `expired` with
+NO fallback to dwell (deliberate MVP choice, spec §13), owners or members can
+cancel instantly, and restarting simply burns budget again.
+
+**Why dwell exists:** the stolen-phone scenario delivers BOTH factors at once
+(SIM = OTP, app storage = device token). The minimum-wait wall makes that
+attack human-speed and cancellable — during dwell the owner can cancel from
+any other logged-in session or delete the vouching device, which kills the
+request outright.
+
+**What `pending_admin` assist means operationally:** YOU establish identity
+out-of-band first (video call, known-face pickup — whatever policy demands),
+then grant. The grant is attributed to your account in `decided_by`.
+
+**Smoke-time env overrides:** smoke runs export
+`FAMILY_LINK_COOLDOWN_HOURS=0` and `RECOVERY_MIN_DWELL_SECONDS=5` before
+booting the stack so the family and dwell branches resolve in seconds;
+production defaults are 48 h and 600 s and everything else keeps spec values.
+
+## 11. Secret inventory (pointer)
+
+Every secret lives ONLY in the gitignored `.env` and reaches containers via
+compose env injection — never committed, never baked into images (asserted by
+smoke step 8). Full lifecycle table with accepted risks: design-spec **§15.1
+"Secret lifecycle inventory (new exposures only)"**. Summary, names only:
+
+| Secret | Lifecycle notes (spec §15.1 row) |
+|---|---|
+| `LDAP_ADMIN_PASSWORD` | EXISTING value, NEW exposure: global admin DN inside the api container. Interim risk accepted TEMPORARILY; successor design = dedicated least-privilege bind DN + slapd ACL (spec §21 #9), same milestone as retiring the :2587 trust boundary. NOT permanent design. |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | stay EMPTY until `OTP_PROVIDER=twilio`; provider module redacts credentials from logs; rotate via Twilio console |
+| OTP codes | 6-digit crypto-random; stored SHA-256-only, single-use, ≤5 attempts, 300 s TTL; console provider PRINTS them by design — dev labs only |
+| Device IDs | raw shown once at registration; server stores SHA-256 only |
+| Passwords | `{SSHA}` salted-SHA-1 in LDAP (the scheme binds require); TLS-only transit; min length enforced; stronger schemes tracked as register #10 |
+
+The MVP-era inventory (`KC_INTROSPECTION_SECRET` et al.) is described in
+section 7 above. No secret VALUES belong in this README.
+
+## 12. Family links (`/family/*`, spec §12)
+
+A Tier-2 member initiates: `POST /family/requests {"target_email":…}`, capped
+at ≤2 requests per unordered pair per rolling 24 h. The target sees an
+approve affordance IN APP ONLY — approving is an authenticated API call by
+the target account itself (`POST /family/requests/{id}/approve`), so there is
+structurally nothing speakable over a phone or pasteable into a chat.
+Unapproved requests expire after 10 minutes.
+
+**Cooldown semantics.** Approval sets
+`usable_at = now + FAMILY_LINK_COOLDOWN_HOURS` (default 48 h). A fresh link
+authorizes NO recovery until the cooldown elapses — an attacker who sneaks a
+link onto a briefly-compromised account hands the owner 48 hours to notice
+and revoke. Smoke overrides the knob to 0 so the flow completes instantly;
+production keeps 48.
+
+**Revoke.** Instant, EITHER party, from any live state, no confirmation
+theater: `POST /family/requests/{id}/revoke` kills usability immediately and
+notifies both sides. Revoked links can never approve recoveries; a fresh
+cooldown applies if they are ever re-established.
+
+**Pointer-only guarantee.** Every transition notifies both members through
+our own mail stack, and those notifications NAME the event ("open the app to
+review") but NEVER carry an action URL — the smoke gate greps the delivered
+message for URLs and fails hard on any hit. This is load-bearing for the
+nothing-relayable property (spec §15.3): forwarding or phishing the email
+grants nothing.
+
 ## Spec §12 success-criteria audit
 
 | # | Criterion | Proof |
