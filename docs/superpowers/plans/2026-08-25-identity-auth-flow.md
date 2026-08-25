@@ -551,7 +551,9 @@ surface is deliberately two verbs: create_user, set_password.
 """
 import logging
 
-from ldap3 import MODIFY_REPLACE, Server
+# T2-review correction (ledger 2026-08-25): the original block omitted `Connection`
+# here — every real write died NameError->LdapUnavailable under fakes-only tests.
+from ldap3 import Connection, MODIFY_REPLACE, Server
 
 from ..config import get_settings
 from ..ssha_util import ssha
