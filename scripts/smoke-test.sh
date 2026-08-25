@@ -218,13 +218,16 @@ curl -sf -X POST localhost:8000/signup/complete -H 'content-type: application/js
   -d "{\"token\":\"$TOK\",\"choice\":{\"kind\":\"skip\"},\"password\":\"$SMOKE_PW\"}" \
   | grep -q '"tier1_phone"' || { echo "carol tier1 complete"; exit 1; }
 # provisioned directory row carries an SSHA password hash (same admin bind DN
-# as seed-ldap.sh uses); on failure dump what ldapsearch actually returned
+# as seed-ldap.sh uses). LDIF prints raw-digest values BASE64 ("userPassword::"
+# + encoded body), so decode before matching; plain form kept as fallback.
 if ! docker compose exec -T openldap ldapsearch -x \
      -b "ou=people,dc=${DOMAIN//./,dc=}" "(mail=carol@sovereign.mail)" userPassword \
      -D "cn=admin,dc=${DOMAIN//./,dc=}" -w "$LDAP_ROOT_PASSWORD" > /tmp/carol-ldap.ldif 2>&1; then
   :; fi
-grep -q "{SSHA}" /tmp/carol-ldap.ldif || {
-  echo "carol LDAP row lacks SSHA hash — ldapsearch output:"; head -20 /tmp/carol-ldap.ldif; exit 1; }
+B64PW=$(sed -n 's/^userPassword:: \([A-Za-z0-9+/=]*\)$/\1/p' /tmp/carol-ldap.ldif)
+{ [ -n "$B64PW" ] && printf '%s' "$B64PW" | base64 -d | grep -q "{SSHA}"; } \
+  || grep -q "^userPassword: {SSHA}" /tmp/carol-ldap.ldif \
+  || { echo "carol LDAP row lacks SSHA hash — ldapsearch output:"; head -20 /tmp/carol-ldap.ldif; exit 1; }
 
 # --- 9b. signup, MANUAL idverify round-trip (dave) ----------------------------
 # IDVERIFY_MODE=manual routes every submission to the operator queue; signup
