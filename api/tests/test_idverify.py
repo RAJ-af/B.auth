@@ -1,9 +1,25 @@
 """Runner honors the frozen contract exactly as §10.1 states."""
 import json
+import os
+from pathlib import Path
 
 import pytest
 
 from app.services import idverify as iv
+
+# Repo-root mock script, resolved relative to THIS file so the end-to-end
+# tests below exercise the real bash+heredoc+python3 subprocess path.
+MOCK_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "mock-idverify.sh"
+
+posix_e2e = pytest.mark.skipif(
+    os.name != "posix" or not MOCK_SCRIPT.exists(),
+    reason="end-to-end runner proof needs a POSIX host with the repo checkout")
+
+
+def _e2e_settings(monkeypatch):
+    monkeypatch.setattr(iv, "get_settings", lambda: type("S", (), {
+        "idverify_script": str(MOCK_SCRIPT),
+        "idverify_timeout_seconds": 1})())
 
 
 def _run(monkeypatch, mode, payload=None, **run_kwargs):
@@ -90,3 +106,38 @@ def test_outcome_for_mode_off():
     o = iv.outcome_for_mode("off")
     assert o.tier == "tier1_phone"
     assert o.identity_status == "identity_checks_off"
+
+
+# --- end-to-end: the REAL script through bash+heredoc+python3 ---------------
+
+_E2E_PAYLOAD = {"contract_version": 1, "full_name": "A B",
+                "document_type": "national_id", "id_number": "X1234567",
+                "consent_selfie": True}
+
+
+@posix_e2e
+def test_e2e_real_script_verified_single(monkeypatch):
+    # Proves the argv payload passthrough survives the real bash -> heredoc ->
+    # python3 pipeline: the submitted document_type/full_name come back in a
+    # masked identity, and exit 0 is parsed as a RESULT, not an error.
+    _e2e_settings(monkeypatch)
+    monkeypatch.setenv("MOCK_IDVERIFY_MODE", "verified_single")
+    out = iv.run_auto_check(dict(_E2E_PAYLOAD))
+    assert out["verified"] is True
+    assert len(out["identities"]) == 1
+    ident = out["identities"][0]
+    assert ident["type"] == "national_id" and ident["name"] == "A B"
+    assert ident["number_masked"].startswith("••••")   # masking held in transit
+
+
+@posix_e2e
+def test_e2e_hung_verifier_is_killed_as_infra_error(monkeypatch):
+    # REAL kill-path evidence: MOCK_IDVERIFY_MODE=slow sleeps 120s inside the
+    # child; subprocess.run(timeout=1) must terminate and reap it. Reaching the
+    # assertion below proves TimeoutExpired was raised by the actual subprocess
+    # machinery and mapped to IdverifyInfraError — this whole test finishes in
+    # ~1s instead of hanging for 120s.
+    _e2e_settings(monkeypatch)
+    monkeypatch.setenv("MOCK_IDVERIFY_MODE", "slow")
+    with pytest.raises(iv.IdverifyInfraError, match="timed out"):
+        iv.run_auto_check({"contract_version": 1})

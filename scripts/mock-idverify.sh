@@ -5,11 +5,12 @@
 set -euo pipefail
 MODE="${MOCK_IDVERIFY_MODE:-verified_single}"
 IN="$(cat)"
-python3 - "$MODE" <<'PY'
+python3 - "$MODE" "$IN" <<'PY'
 import json, os, sys
 mode = sys.argv[1]
 try:
-    inp = json.loads(sys.stdin.read() or "{}")
+    raw = sys.argv[2] if len(sys.argv) > 2 else ""
+    inp = json.loads(raw or "{}")
 except json.JSONDecodeError:
     print("mock-idverify: stdin was not JSON", file=sys.stderr); sys.exit(64)
 if inp.get("contract_version") != 1:
