@@ -94,7 +94,7 @@ def admin_login():
     import base64, hashlib
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier_plain.encode()).digest()).rstrip(b"=").decode()
-    redirect_uri = f"{s.kc_frontend_url}/admin/callback"
+    redirect_uri = f"{s.api_public_url}/admin/callback"
     _login_states.put(state, {"redirect_uri": redirect_uri,
                               "verifier": verifier_plain, "nonce": nonce})
     return RedirectResponse(

@@ -36,7 +36,7 @@ JSON
 CID_APP=$($KCADM get "clients?clientId=${KC_APP_CLIENT}" -r "$KC_REALM" \
   --fields id --format csv --noquotes | tail -1)
 $KCADM update "clients/${CID_APP}" -r "$KC_REALM" \
-  -s "redirectUris=[\"http://localhost:8000/auth/callback\",\"http://localhost:*/*\",\"sovereign://callback\",\"http://localhost:${KEYCLOAK_PORT}/admin/callback\"]" >/dev/null
+  -s "redirectUris=[\"http://localhost:8000/auth/callback\",\"http://localhost:*/*\",\"sovereign://callback\",\"http://localhost:${API_PORT}/admin/callback\"]" >/dev/null
 
 # Confidential introspection client: generate secret, persist to .env (gitignored).
 # Re-runs must UPDATE the existing client's secret (not skip) so .env stays in

@@ -112,6 +112,7 @@ services:
       KEYCLOAK_BASE_URL: http://keycloak:8080
       # Host-facing issuer base (matches keycloak's --hostname pin); see Ruling 5.
       KC_FRONTEND_URL: http://localhost:${KEYCLOAK_PORT}
+      API_PUBLIC_URL: http://localhost:${API_PORT}
       KC_REALM: ${KC_REALM}
       KC_APP_CLIENT: ${KC_APP_CLIENT}
       API_AUDIENCE: ${API_AUDIENCE}

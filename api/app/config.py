@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Host-facing issuer base — matches Keycloak's --hostname pin (Ruling 5):
     # real tokens carry iss=http://localhost:<port>/realms/<realm>.
     kc_frontend_url: str = "http://localhost:8080"
+    # Browser-facing base of THIS api — the admin login's redirect_uri target.
+    # Distinct from kc_frontend_url: that names Keycloak, this names us.
+    api_public_url: str = "http://localhost:8000"
     kc_realm: str = "sovereign"
     kc_app_client: str = "sovereign-app"
     api_audience: str = "sovereign-mail-api"
@@ -76,7 +79,7 @@ class Settings(BaseSettings):
         "http://localhost:8000/auth/callback", "http://localhost:*/*", "sovereign://callback",
         # Keycloak honors no port wildcards (Wave B gate finding) — the admin
         # dashboard callback is pinned literally, matching the seeded client.
-        "http://localhost:8080/admin/callback"]
+        "http://localhost:8000/admin/callback"]
     ca_cert_path: str = "/certs/rootCA.pem"
 
     # --- Identity & Auth Flow subsystem (spec 2026-08-25 §16) ---
