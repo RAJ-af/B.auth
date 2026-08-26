@@ -201,6 +201,16 @@ SQL
 docker compose exec -T openldap sh -c \
   'for u in carol dave; do ldapdelete -x -D "cn=admin,dc='"${DOMAIN//./,dc=}"'" \
      -w "'"$LDAP_ROOT_PASSWORD"'" "mail=$u@'"$DOMAIN"',ou=people,dc='"${DOMAIN//./,dc=}"'" 2>/dev/null; done; true'
+# phases 9e/9f reset alice's and bob's LDAP passwords out from under their
+# seeded values — converge them back so the gate is re-runnable across
+# SUCCESSFUL runs too (carol/dave are recreated from scratch above; the
+# seeded users must instead be restored). Phase 3 logins stay the loud
+# oracle if a row is missing.
+for U in "${TEST_USER_ALICE}" "${TEST_USER_BOB}"; do
+  docker compose exec -T openldap ldappasswd -x \
+    -D "cn=admin,dc=${DOMAIN//./,dc=}" -w "$LDAP_ROOT_PASSWORD" \
+    -s "$TEST_USER_PASSWORD" "mail=${U},ou=people,dc=${DOMAIN//./,dc=}" >/dev/null 2>&1 || true
+done
 docker compose exec -T dovecot sh -c \
   'rm -rf /var/mail/vhosts/'"${DOMAIN}"'/carol /var/mail/vhosts/'"${DOMAIN}"'/dave 2>/dev/null; true'
 
