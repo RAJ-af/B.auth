@@ -50,6 +50,18 @@ if docker compose exec -T dovecot doveconf -n | grep -q "mechanisms.*plain"; the
   echo "PLAIN LEAKED"; exit 1
 fi
 
+echo "== 3-pre. converge seeded-user LDAP passwords =="
+# Phases 9e/9f reset alice's and bob's LDAP passwords through the recovery
+# flow, so after any SUCCESSFUL prior run the seeded users carry recovery
+# values. The heal must happen BEFORE phase 3's logins — placed later (at
+# 9-pre) phase 3 dies on stale poison and never reaches it. Tolerant like the
+# scrub deletes; a missing row stays phase 3's loud failure.
+for U in "${TEST_USER_ALICE}" "${TEST_USER_BOB}"; do
+  docker compose exec -T openldap ldappasswd -x \
+    -D "cn=admin,dc=${DOMAIN//./,dc=}" -w "$LDAP_ROOT_PASSWORD" \
+    -s "$TEST_USER_PASSWORD" "mail=${U},ou=people,dc=${DOMAIN//./,dc=}" >/dev/null 2>&1 || true
+done
+
 echo "== 3. live api loop =="
 python3 scripts/live_check.py
 
@@ -201,16 +213,8 @@ SQL
 docker compose exec -T openldap sh -c \
   'for u in carol dave; do ldapdelete -x -D "cn=admin,dc='"${DOMAIN//./,dc=}"'" \
      -w "'"$LDAP_ROOT_PASSWORD"'" "mail=$u@'"$DOMAIN"',ou=people,dc='"${DOMAIN//./,dc=}"'" 2>/dev/null; done; true'
-# phases 9e/9f reset alice's and bob's LDAP passwords out from under their
-# seeded values — converge them back so the gate is re-runnable across
-# SUCCESSFUL runs too (carol/dave are recreated from scratch above; the
-# seeded users must instead be restored). Phase 3 logins stay the loud
-# oracle if a row is missing.
-for U in "${TEST_USER_ALICE}" "${TEST_USER_BOB}"; do
-  docker compose exec -T openldap ldappasswd -x \
-    -D "cn=admin,dc=${DOMAIN//./,dc=}" -w "$LDAP_ROOT_PASSWORD" \
-    -s "$TEST_USER_PASSWORD" "mail=${U},ou=people,dc=${DOMAIN//./,dc=}" >/dev/null 2>&1 || true
-done
+# seeded-user password convergence now happens at 3-pre, before phase 3's
+# logins (see block there).
 docker compose exec -T dovecot sh -c \
   'rm -rf /var/mail/vhosts/'"${DOMAIN}"'/carol /var/mail/vhosts/'"${DOMAIN}"'/dave 2>/dev/null; true'
 
