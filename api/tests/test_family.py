@@ -102,6 +102,27 @@ def test_request_notice_bodies_are_pointer_only(world):
         assert "http" not in body.lower()          # no action URLs, ever
 
 
+def test_sent_confirmation_names_target_not_self(world):
+    """R1 regression: the requester's family_request_sent notice must name the
+    TARGET's masked address — never the requester's own mask (one shared mask
+    variable once made it read 'Request sent to <yourself>')."""
+    fm.request_link("a@sovereign.mail", "t1@sovereign.mail")
+    sent = next(n for n in world["notes"]
+                if n[0] == "a@sovereign.mail"
+                and n[1] == "family_request_sent")
+    assert "t***@sovereign.mail" in sent[2]        # the target was named
+    assert "a***@sovereign.mail" not in sent[2]    # never the requester themself
+    # mirror side unchanged: the target's notice still names the REQUESTER
+    received = next(n for n in world["notes"]
+                    if n[0] == "t1@sovereign.mail"
+                    and n[1] == "family_request_received")
+    assert "a***@sovereign.mail" in received[2]
+    assert "t***@sovereign.mail" not in received[2]
+    mail = next(n for n in world["notes"]
+                if n[0] == "email" and n[1] == "t1@sovereign.mail")
+    assert "a***@sovereign.mail" in mail[3]        # pointer copy names requester
+
+
 def test_tier2_gate_on_requester(world):
     with pytest.raises(fm.NotEligible):
         fm.request_link("b@sovereign.mail", "a@sovereign.mail")

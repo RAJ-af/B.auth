@@ -302,6 +302,49 @@ def test_real_get_session_accepts_both_payload_shapes(monkeypatch):
     assert out == {"payload": payload, "stage": "awaiting_otp"}
 
 
+def test_expired_session_is_deleted_on_touch(monkeypatch):
+    """The §15.1 'session TTL sweep' is a LAZY delete-on-read: the first touch
+    of an expired row burns it — credential material must not linger forever."""
+    import app.db as appdb
+    import app.routers.signup_router as sr
+
+    calls: list[tuple] = []
+
+    def fake_one(q, p=()):
+        calls.append(("select", p))
+        return {"payload_json": {"email": "stale@sovereign.mail"},
+                "stage": "choose_identity", "exp": time.time() - 1}
+    monkeypatch.setattr(appdb, "one", fake_one)
+    monkeypatch.setattr(appdb, "execute",
+                        lambda q, p=(): calls.append(("delete", q, p)))
+
+    assert sr._get_session("dead-tok") is None
+    deletes = [c for c in calls if c[0] == "delete"]
+    assert len(deletes) == 1                       # swept exactly once
+    assert "DELETE FROM signup_sessions" in deletes[0][1]
+    assert deletes[0][2] == ("dead-tok",)          # ONLY the expired token
+
+
+def test_live_session_is_never_deleted_on_read(monkeypatch):
+    import app.db as appdb
+    import app.routers.signup_router as sr
+
+    calls: list[tuple] = []
+
+    def fake_one(q, p=()):
+        calls.append(("select", p))
+        return {"payload_json": json.dumps({"email": "ok@sovereign.mail"}),
+                "stage": "awaiting_identity_choice",
+                "exp": time.time() + 600}
+    monkeypatch.setattr(appdb, "one", fake_one)
+    monkeypatch.setattr(appdb, "execute",
+                        lambda q, p=(): calls.append(("delete", q, p)))
+
+    out = sr._get_session("live-tok")
+    assert out is not None and out["stage"] == "awaiting_identity_choice"
+    assert [c for c in calls if c[0] == "delete"] == []   # no sweep on live rows
+
+
 def test_verify_otp_with_live_driver_shape_session(monkeypatch):
     """Full-flow gate pin: REAL session seams over a db fake returning the
     live psycopg3 shape — verify-otp must proceed normally, never 500."""

@@ -136,18 +136,23 @@ def request_link(requester_email: str, target_email: str) -> dict:
             "status": "requested", "created_at": now,
             "expires_at_ts": now + REQUEST_TTL_SECONDS}
     stored = _put_link(link)
-    masked = notifications.mask_email(requester_email)
+    # TWO masks, never one shared variable: each notice must name the OTHER
+    # party it refers to — the sent-confirmation names the TARGET, the
+    # received/pending notices name the REQUESTER (a self-naming body once
+    # told the requester "Request sent to <yourself>").
+    requester_masked = notifications.mask_email(requester_email)
+    target_masked = notifications.mask_email(target_email)
     notifications.notify(target_email, "family_request_received",
-                         f"{masked} asked to link accounts with you. "
-                         "Open your app to approve or ignore.")
+                         f"{requester_masked} asked to link accounts with "
+                         "you. Open your app to approve or ignore.")
     notifications.notify(requester_email, "family_request_sent",
-                         f"Request sent to {masked}. They have "
+                         f"Request sent to {target_masked}. They have "
                          f"{REQUEST_TTL_SECONDS // 60} minutes to respond.")
     notifications.fan_out_email(
         target_email, "Sovereign Mail: family link request",
-        f"You have a pending family-link request from {masked}. Open your "
-        "Sovereign Mail app to review. This mailbox does not accept actions "
-        "by reply.")
+        f"You have a pending family-link request from {requester_masked}. "
+        "Open your Sovereign Mail app to review. This mailbox does not "
+        "accept actions by reply.")
     return stored
 
 

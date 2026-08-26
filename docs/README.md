@@ -359,12 +359,13 @@ theater: `POST /family/requests/{id}/revoke` kills usability immediately.
 Revoked links can never approve recoveries; a fresh cooldown applies if they
 are ever re-established.
 
-**Who gets told.** EVERY transition — requested, approved, revoked — notifies
-ALL linked members of BOTH accounts' neighborhoods: an in-app row plus an
-email copy into each member's sovereign mailbox. Requested/approved/expired
-transitions of recovery windows follow the same rule (see section 10); the
-expiry flip itself sends no notice because it happens lazily inside read
-paths — that notification is deferred to Phase 2 (spec §21 #15).
+**Who gets told.** Every LIVE transition notifies all linked members of BOTH
+accounts' link neighborhoods: requested / approved / revoked each produce an
+in-app row plus an email copy into every member's sovereign mailbox, and a
+pending_family recovery window opening fans out the same way (section 10).
+Expiry is the one SILENT transition — it flips lazily inside read paths and
+sends nothing; that notification is deferred to Phase 2 (spec §21 register
+#15).
 
 **Pointer-only guarantee.** Those notifications NAME the event ("open the app
 to review") and identify people MASKED (`r***@sovereign.mail`) but NEVER carry

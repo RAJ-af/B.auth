@@ -59,10 +59,16 @@ def _create_session(token: str, payload: dict, ttl: int =
 
 
 def _get_session(token: str) -> dict | None:
-    from ..db import one
+    from ..db import execute, one
     r = one("""SELECT payload_json, stage, extract(epoch from expires_at)::float AS exp
                FROM signup_sessions WHERE token=%s""", (token,))
-    if not r or r["exp"] < time.time():
+    if not r:
+        return None
+    if r["exp"] < time.time():
+        # Lazy delete-on-expiry (the §15.1 'session TTL sweep' — there is no
+        # background reaper by design): an expired row must not linger with
+        # its credential material; burn it on first touch.
+        execute("DELETE FROM signup_sessions WHERE token=%s", (token,))
         return None
     raw = r["payload_json"]
     if isinstance(raw, (str, bytes, bytearray)):

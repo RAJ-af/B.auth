@@ -658,6 +658,10 @@ with adversarial review per wave, deviations D-numbered in the ledger.
 15. Notification on family-window expiry — deferred to Phase 2: the lazy flip
     happens INSIDE read paths (§12), so emitting mail there would side-effect
     GETs; revisit alongside register #13.
+16. Client-declared `account_type='guardian_managed'` at `/signup/start` is
+    TRUSTED INPUT at MVP: guardianship enforcement assumes honest
+    declaration; verification of a guardian–dependent relationship is
+    deferred.
 
 ## 22. Deliverables & Repo Layout Delta
 
