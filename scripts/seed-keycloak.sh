@@ -13,9 +13,13 @@ $KCADM create realms -s realm="$KC_REALM" -s enabled=true -s sslRequired=NONE \
 # OTP policy + required default action.
 # KC 26.x: no /authentication/otp-policy sub-resource — the policy fields live on the
 # realm representation; the required-action alias is uppercase (CONFIGURE_TOTP).
+# CodeReusable=true: this is the dev/test realm (TEST_TOTP_SECRET_* ship publicly in
+# .env.example); without it, two logins of the SAME user inside one 30s window
+# (phase 3 API login then phase 9 kc_token) submit the same code and the second
+# is rejected — verified reproducible on KC 26.
 $KCADM update realms/"$KC_REALM" -r "$KC_REALM" \
   -s otpPolicyType=totp -s otpPolicyAlgorithm=HmacSHA1 -s otpPolicyDigits=6 \
-  -s otpPolicyPeriod=30 -s otpPolicyLookAheadWindow=1
+  -s otpPolicyPeriod=30 -s otpPolicyLookAheadWindow=1 -s otpPolicyCodeReusable=true
 $KCADM update authentication/required-actions/CONFIGURE_TOTP -r "$KC_REALM" \
   -s enabled=true -s defaultAction=true
 
