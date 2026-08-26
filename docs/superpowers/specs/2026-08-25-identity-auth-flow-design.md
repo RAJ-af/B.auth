@@ -476,6 +476,7 @@ neither is ever sufficient alone** (#7 satisfied literally).
 | OTP codes | 6-digit crypto-random; stored ONLY as SHA-256; TTL 300s; single-use; ≤5 attempts | Console provider prints codes BY DESIGN — dev only; startup WARNING when selected |
 | Device IDs | raw shown once at registration; server stores SHA-256 only | DB leak alone cannot forge the factor |
 | Passwords | `{SSHA}` salted-SHA-1 written to LDAP (the scheme LDAP binds require; same as seed script); transit TLS-only; min-length policy enforced | SSHA is weak by modern KDF standards — accepted because it is what LDAP federation binds against; Phase-2 register #10 investigates stronger schemes |
+| Paused-signup password (multi-identity pause, §8.2) | arrives at `/signup/complete`, stored in `signup_sessions.payload_json` ONLY as the `{SSHA}` form (never plaintext); TTL-bounded by the 15-min signup-session expiry; BURNED at `/signup/identity-choice` completion (session deleted) or by the session TTL sweep | Bind-capable within the window — same exposure class as the post-provisioning LDAP row itself. Accepted because §8.2's identity-choice contract deliberately carries no password re-entry; mitigated by single-consumption + TTL + the identical trust boundary as all other `sovereign_app` data |
 
 ### 15.2 Trust boundaries & phase transitions
 
