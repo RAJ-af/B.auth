@@ -24,7 +24,9 @@ router = APIRouter(prefix="/signup", tags=["signup"])
 # _EMAIL_LOCAL: '$' alone would match BEFORE a trailing newline, letting "x\n"
 # pass here and die as a raw ValueError 500 at the LDAP boundary.
 LOCAL_PART = re.compile(r"[a-z0-9][a-z0-9._-]{0,30}")
-PHONE_E164 = re.compile(r"^\+[1-9]\d{7,14}$")
+# Same trap, phone edition: fullmatch()-checked so "+911...\n" cannot ride the
+# '$'-before-newline quirk into the OTP/SSMS layer as a deliverable "number".
+PHONE_E164 = re.compile(r"\+[1-9]\d{7,14}")
 
 
 def valid_email(email: str) -> bool:
@@ -34,7 +36,7 @@ def valid_email(email: str) -> bool:
 
 
 def valid_phone(phone: str) -> bool:
-    return bool(PHONE_E164.match(phone))
+    return bool(PHONE_E164.fullmatch(phone))
 
 
 def password_ok(password: str) -> bool:
@@ -135,10 +137,10 @@ def start(body: StartBody):
     token = secrets.token_urlsafe(24)
     try:
         otp_service.send_challenge(body.phone_e164, "signup")
-    except otp_service.BudgetExceeded as e:
-        # Anti-enumeration posture: same shape as success-era responses; the
-        # caller learns only "wait". Spec §15.3 keeps this deliberate.
-        raise HTTPException(503, f"otp temporarily unavailable: {e}")
+    except otp_service.BudgetExceeded:
+        # Spec §8.4 contracts exactly 429 {"detail":"too many attempts"} for a
+        # phone over budget; the provider-down branch below keeps its 503.
+        raise HTTPException(429, "too many attempts")
     except otp_service.OtpSendError as e:
         raise HTTPException(503, f"otp temporarily unavailable: {e}")
     _create_session(token, body.model_dump())

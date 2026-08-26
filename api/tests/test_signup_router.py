@@ -202,6 +202,50 @@ def test_ldap_down_503_session_retained_then_recovers(w, monkeypatch):
     assert tok not in w["sessions"]          # burned only on full success
 
 
+def test_budget_exhausted_start_is_429_too_many_attempts(w, monkeypatch):
+    """§8.4 union member: a phone over its OTP budget answers exactly
+    429 {"detail":"too many attempts"} — never the provider-down 503."""
+    import app.routers.signup_router as sr
+
+    def over(phone, purpose, channel="sms"):
+        raise sr.otp_service.BudgetExceeded("hourly budget exhausted")
+    monkeypatch.setattr(sr.otp_service, "send_challenge", over)
+
+    r = w["client"].post("/signup/start", json={
+        "email": "budgeted@sovereign.mail", "display_name": "B",
+        "phone_e164": "+911234567890", "account_type": "independent"})
+    assert r.status_code == 429
+    assert r.json() == {"detail": "too many attempts"}
+    assert w["sessions"] == {}               # nothing persisted on refusal
+
+
+def test_provider_down_at_send_stays_503(w, monkeypatch):
+    """The OtpSendError branch KEEPS its 503 — only budget exhaustion is 429."""
+    import app.routers.signup_router as sr
+
+    def down(phone, purpose, channel="sms"):
+        raise sr.otp_service.OtpSendError("provider unreachable")
+    monkeypatch.setattr(sr.otp_service, "send_challenge", down)
+
+    r = w["client"].post("/signup/start", json={
+        "email": "outage@sovereign.mail", "display_name": "O",
+        "phone_e164": "+911234567890", "account_type": "independent"})
+    assert r.status_code == 503
+    assert "temporarily unavailable" in r.json()["detail"]
+
+
+def test_trailing_newline_phone_is_422(w):
+    """Phone twin of the local-part '$-anchor' pin: PHONE_E164 must be
+    fullmatch()-checked or "+911234567890\\n" rides the match()-before-newline
+    quirk through validation into the SMS layer."""
+    r = w["client"].post("/signup/start", json={
+        "email": "newline@sovereign.mail", "display_name": "N",
+        "phone_e164": "+911234567890\n", "account_type": "independent"})
+    assert r.status_code == 422
+    assert w["sessions"] == {}               # nothing persisted
+    assert w["otp_sent"] == []               # no budget touched
+
+
 def test_trailing_newline_local_part_is_422_not_500(w):
     """$-anchor regression pin: '$' matches BEFORE a trailing newline, so the
     old LOCAL_PART.match('x\\n') passed while ldap_admin's fullmatch rejected
