@@ -77,6 +77,7 @@ def test_callback_good_role_sets_session_cookie(world):
     assert r2.status_code == 302 and r2.headers["location"] == "/admin"
     cookie = r2.headers["set-cookie"]
     assert "HttpOnly" in cookie and "samesite=lax" in cookie.lower()
+    assert "path=/admin" in cookie.lower()   # scoped to the dashboard prefix
     sid = cookie.split("admin_session=")[1].split(";")[0]
     assert sid in world["sessions"]
     # single-use state consumed:
@@ -233,3 +234,18 @@ def test_json_api_bearer_path(world, queue):
     assert set(body["reviews"][0]) <= {
         "review_id", "email", "reason", "status", "error_detail",
         "document_type", "identities_count", "created_at"}
+
+
+def test_approve_maps_missing_account_to_409(world, queue, monkeypatch):
+    """decide_review's loud domain failure (ghost accounts row) must surface
+    as a clean 409 from the bearer route, never a raw 500."""
+    import app.services.idverify as iv
+
+    def boom(rid, decision, reviewer):
+        raise iv.AccountMissingForReview(
+            "no accounts row for reviewed address fam@sovereign.mail")
+    monkeypatch.setattr(iv, "decide_review", boom)
+    r = world["client"].post("/admin/api/reviews/7/approve",
+                             headers={"Authorization": f"Bearer {ROLE_TOKEN}"})
+    assert r.status_code == 409
+    assert "no accounts row" in r.json()["detail"]

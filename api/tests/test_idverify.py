@@ -171,6 +171,71 @@ def test_outcome_for_mode_off():
     assert o.identity_status == "identity_checks_off"
 
 
+# --- decide_review: atomic flip + loud failure on missing accounts row -------
+
+class _FakeCursor:
+    def __init__(self, rowcount):
+        self.rowcount = rowcount
+
+
+class _FakeConn:
+    """Stand-in for db.tx()'s connection; records every executed statement."""
+
+    def __init__(self, promote_rowcount=1):
+        self.executed: list[tuple] = []
+        self.promote_rowcount = promote_rowcount
+
+    def execute(self, q, p=()):
+        self.executed.append((q, p))
+        if "UPDATE accounts" in q:
+            return _FakeCursor(self.promote_rowcount)
+        return _FakeCursor(1)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False                      # real tx() would roll back on raise
+
+
+def _fake_db(monkeypatch, conn):
+    import app.db as appdb
+    monkeypatch.setattr(appdb, "one",
+                        lambda q, p=(): {"email": "fam@sovereign.mail"})
+    monkeypatch.setattr(appdb, "tx", lambda: conn)
+
+
+def test_decide_review_approval_promotes_and_returns_true(monkeypatch):
+    conn = _FakeConn(promote_rowcount=1)
+    _fake_db(monkeypatch, conn)
+    assert iv.decide_review(7, "approved", "op@sovereign.mail") is True
+    assert len(conn.executed) == 2        # review flip + promotion, one tx
+    assert any("UPDATE accounts" in q for q, _ in conn.executed)
+
+
+def test_decide_review_missing_account_fails_loud_not_flipped(monkeypatch):
+    """Approval over a ghost account must RAISE (router -> 409), and because
+    the raise happens inside tx(), the review is never left 'approved'."""
+    conn = _FakeConn(promote_rowcount=0)   # UPDATE accounts matched nothing
+    _fake_db(monkeypatch, conn)
+    with pytest.raises(iv.AccountMissingForReview, match="no accounts row"):
+        iv.decide_review(7, "approved", "op@sovereign.mail")
+
+
+def test_decide_review_rejection_touches_no_accounts_row(monkeypatch):
+    conn = _FakeConn()
+    _fake_db(monkeypatch, conn)
+    assert iv.decide_review(7, "rejected", "op@sovereign.mail") is True
+    assert not any("UPDATE accounts" in q for q, _ in conn.executed)
+
+
+def test_decide_review_unknown_or_decided_is_false(monkeypatch):
+    import app.db as appdb
+    monkeypatch.setattr(appdb, "one", lambda q, p=(): None)
+    monkeypatch.setattr(appdb, "tx", lambda: _FakeConn())
+    assert iv.decide_review(99, "approved", "op") is False
+
+
 # --- end-to-end: the REAL script through bash+heredoc+python3 ---------------
 
 _E2E_PAYLOAD = {"contract_version": 1, "full_name": "A B",

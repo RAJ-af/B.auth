@@ -129,8 +129,10 @@ def admin_callback(code: str = "", state: str = ""):
     _sessions[sid] = {"claims": claims, "csrf": secrets.token_urlsafe(24),
                       "t": time.time()}
     resp = RedirectResponse("/admin", status_code=302)
+    # Scoped to /admin (plan Task 8's own text): every dashboard route lives
+    # under the prefix, so the browser never offers this sid to other paths.
     resp.set_cookie(ADMIN_COOKIE, sid, httponly=True, samesite="lax",
-                    path="/", max_age=ADMIN_SESSION_TTL_SECONDS)
+                    path="/admin", max_age=ADMIN_SESSION_TTL_SECONDS)
     return resp
 
 
@@ -139,7 +141,7 @@ def admin_logout(request: Request):
     sid = request.cookies.get(ADMIN_COOKIE)
     _sessions.pop(sid or "", None)
     resp = RedirectResponse("/", status_code=302)
-    resp.delete_cookie(ADMIN_COOKIE, path="/")
+    resp.delete_cookie(ADMIN_COOKIE, path="/admin")   # must match set_cookie
     return resp
 
 
@@ -196,7 +198,11 @@ async def review_decide(request: Request, review_id: int):
     decision = form.get("decision", "")
     if decision not in ("approved", "rejected"):
         raise HTTPException(422, "decision must be 'approved' or 'rejected'")
-    idv.decide_review(review_id, decision, sess["claims"]["email"])
+    try:
+        idv.decide_review(review_id, decision, sess["claims"]["email"])
+    except idv.AccountMissingForReview as e:
+        # Reviewed address has no accounts row — loud failure, nothing flipped.
+        raise HTTPException(409, str(e))
     return RedirectResponse("/admin", status_code=303)
 
 
@@ -208,7 +214,11 @@ def api_reviews(claims: dict = Depends(require_admin)):
 @router.post("/api/reviews/{review_id}/approve")
 def api_approve(review_id: int, claims: dict = Depends(require_admin)):
     """Scripted-approval path used by smoke-test; HTML flow stays CSRF-guarded."""
-    if not idv.decide_review(review_id, "approved", claims["email"]):
+    try:
+        ok = idv.decide_review(review_id, "approved", claims["email"])
+    except idv.AccountMissingForReview as e:
+        raise HTTPException(409, str(e))
+    if not ok:
         raise HTTPException(404, "no pending review with that id")
     return {"ok": True}
 

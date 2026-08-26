@@ -28,6 +28,11 @@ class IdverifyInfraError(Exception):
     pass
 
 
+class AccountMissingForReview(Exception):
+    """Approval tried to promote an email with no accounts row — a loud domain
+    failure, never a silent True (routers map it to 409)."""
+
+
 @dataclass
 class IdentityOutcome:
     tier: str                    # tier1_phone | tier2_identity
@@ -174,16 +179,24 @@ def get_review(review_id: int) -> dict | None:
 def decide_review(review_id: int, decision: str, reviewer: str) -> bool:
     if decision not in ("approved", "rejected"):
         raise ValueError(decision)
-    from ..db import execute, one
+    from ..db import one, tx
     r = one("SELECT email FROM verification_reviews WHERE review_id=%s AND "
             "status='pending'", (review_id,))
     if not r:
         return False
-    execute("""UPDATE verification_reviews
-               SET status=%s, reviewed_by=%s, decided_at=now()
-               WHERE review_id=%s""", (decision, reviewer, review_id))
-    if decision == "approved":
-        execute("""UPDATE accounts SET tier='tier2_identity',
+    # ONE transaction: the review flip and the tier-2 promotion commit together
+    # or not at all. A missing accounts row (rowcount != 1) raises INSIDE the
+    # tx, so the review is NOT left flipped to approved over a ghost account.
+    with tx() as conn:
+        conn.execute("""UPDATE verification_reviews
+                        SET status=%s, reviewed_by=%s, decided_at=now()
+                        WHERE review_id=%s""", (decision, reviewer, review_id))
+        if decision == "approved":
+            cur = conn.execute(
+                """UPDATE accounts SET tier='tier2_identity',
                      verification='manual_verified', id_source='manual',
                      updated_at=now() WHERE email=%s""", (r["email"],))
+            if cur.rowcount != 1:
+                raise AccountMissingForReview(
+                    f"no accounts row for reviewed address {r['email']}")
     return True
