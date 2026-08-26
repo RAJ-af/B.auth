@@ -64,6 +64,13 @@ def w(monkeypatch):
     monkeypatch.setattr(rc.otp_service, "verify_challenge", fake_verify)
     monkeypatch.setattr(rc, "_phone_for",
                         lambda e: "+seed-" + e.split("@")[0])
+    # Guardianship control seams (§8.2): default world has only INDEPENDENT
+    # accounts and no phone-matched guardians; individual tests override.
+    monkeypatch.setattr(rc, "_account_control", lambda e: (
+        {"account_type": "independent", "guardian_phone": None}
+        if store["accounts"].get(e) else None))
+    monkeypatch.setattr(rc, "_accounts_with_phone", lambda p: [])
+    monkeypatch.setattr(rc, "_actor_is_managed", lambda e: False)
     # R7: fake returns PRODUCTION-SHAPED rows (link_id/requester_email/
     # target_email/status/usable_at_ts). Each fixture entry {"member_of": e,
     # "partner": p} models one usable link between e and p; partner is optional
@@ -81,7 +88,7 @@ def w(monkeypatch):
     monkeypatch.setattr(rc.notifications, "notify",
                         lambda e, t, b: events.append(("note", e, t)))
     monkeypatch.setattr(rc.notifications, "fan_out_email",
-                        lambda *a, **k: events.append(("email", a[0])))
+                        lambda *a, **k: events.append(("email",) + a))
     monkeypatch.setattr(rc.notifications, "send_sms_alert",
                         lambda p, b: events.append(("sms", p)) or True)
     monkeypatch.setattr(rc.ldap_admin, "set_password",
@@ -294,6 +301,93 @@ def test_admin_grant_flips_pending_admin_to_authorized(w):
     # the granted path completes like family-approved ones do:
     assert rc.maybe_complete("alice@sovereign.mail",
                              "new-password-long", None) == ("completed", 201)
+
+
+# --- N1: notification coverage (spec §12/§13) ---------------------------------
+
+def _notes(w, kind):
+    return [e for e in w["events"] if e[0] == kind]
+
+
+def test_family_branch_notifies_every_linked_member_once(w):
+    """Branch pick into pending_family tells EVERY active&cooled member exactly
+    once — in-app row plus one pointer-only email each, requester MASKED."""
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "mem1@sovereign.mail"})
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "mem2@sovereign.mail"})
+    out = rc.start_recovery("alice@sovereign.mail", None)
+    n_at_start = len(w["events"])     # owner's own start notice precedes this
+    rc.verify_otp("alice@sovereign.mail", "123456")
+    assert out["status"] == "pending_family"
+    picked = w["events"][n_at_start:]
+    notes = [e[1] for e in picked if e[0] == "note"]
+    emails = [e for e in picked if e[0] == "email"]
+    for member in ("mem1@sovereign.mail", "mem2@sovereign.mail"):
+        assert notes.count(member) == 1          # exactly once per member
+        assert [e[1] for e in emails].count(member) == 1
+    assert not any(e[1].startswith("alice@") for e in emails)  # requester not fanned
+    body = next(e for e in emails if e[1] == "mem1@sovereign.mail")
+    assert "family recovery approval needed" in body[2]      # subject style
+    assert "a***@sovereign.mail" in body[3]      # masked name, per §12 shape
+    assert "http" not in body[3].lower()         # pointer-only, LOAD-BEARING
+
+
+def test_managed_recovery_lands_pending_admin_and_notifies_guardian(
+        w, monkeypatch):
+    """§8.2 point 3: a managed account's own recovery routes to pending_admin
+    ALWAYS — even with usable links present — and the GUARDIAN learns."""
+    w["store"]["accounts"]["kid@sovereign.mail"] = True   # the dependent exists
+    monkeypatch.setattr(rc, "_account_control", lambda e: {
+        "account_type": "guardian_managed",
+        "guardian_phone": "+919999999999"})
+    monkeypatch.setattr(rc, "_accounts_with_phone",
+                        lambda p: ["guardian@sovereign.mail"])
+    w["links"].append({"member_of": "kid@sovereign.mail",
+                       "partner": "member@sovereign.mail"})   # must be IGNORED
+    out = rc.start_recovery("kid@sovereign.mail", None)
+    rc.verify_otp("kid@sovereign.mail", "123456")
+    assert out["status"] == "pending_admin"      # never pending_family/dwell
+    assert ("note", "guardian@sovereign.mail", "guardian_recovery_alert") \
+        in w["events"]
+    email = next(e for e in _notes(w, "email")
+                 if e[1] == "guardian@sovereign.mail")
+    assert "k***@sovereign.mail" in email[3]     # masked dependent, never raw
+    assert "http" not in email[3].lower()        # pointer-only, LOAD-BEARING
+    # the family window never opened: no member was invited to approve
+    assert "member@sovereign.mail" not in [e[1] for e in _notes(w, "email")]
+
+
+def test_cancel_notifies_owner_regardless_of_canceller(w):
+    """§13: owner is told about every cancel — own or a standing member's.
+    Wire silence unchanged: this is a service-level side effect only."""
+    out = rc.start_recovery("alice@sovereign.mail", None)
+    rc.cancel("alice@sovereign.mail", "alice@sovereign.mail")
+    assert ("note", "alice@sovereign.mail", "recovery_cancelled") in w["events"]
+    assert any(e[0] == "email" and e[1] == "alice@sovereign.mail"
+               for e in w["events"])
+
+    # second round: a MEMBER cancelling still reaches the owner
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "member@sovereign.mail"})
+    out2 = rc.start_recovery("alice@sovereign.mail", None)
+    n_before = len([e for e in _notes(w, "note")
+                    if e[1] == "alice@sovereign.mail"
+                    and e[2] == "recovery_cancelled"])
+    rc.cancel("alice@sovereign.mail", "member@sovereign.mail")
+    n_after = len([e for e in _notes(w, "note")
+                   if e[1] == "alice@sovereign.mail"
+                   and e[2] == "recovery_cancelled"])
+    assert n_after == n_before + 1
+    assert out2["status"] == "cancelled"
+
+
+def test_failed_cancel_notifies_nothing(w):
+    rc.start_recovery("alice@sovereign.mail", None)
+    n = len(w["events"])
+    assert rc.cancel("alice@sovereign.mail",
+                     "mallory@sovereign.mail") is False   # no standing
+    assert len(w["events"]) == n              # zero side effects, wire-silent
 
 
 # --- assisted-queue listing (README §9/§10; masking idiom) ---------------------

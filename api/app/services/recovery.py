@@ -101,6 +101,20 @@ def _phone_for(email: str) -> str:
     return r["phone_e164"] if r else ""
 
 
+def _account_control(email: str) -> dict | None:
+    """Guardianship control fields for the branch pick (§8.2): account_type +
+    guardian_phone decide whether a recovery may self-service at all."""
+    return one("SELECT account_type, guardian_phone FROM accounts WHERE email=%s",
+               (email,))
+
+
+def _accounts_with_phone(phone: str) -> list[str]:
+    """Every account holding this phone — phones are deliberately NON-unique
+    (spec §6), so one guardian number can reach several guardian accounts."""
+    return [r["email"] for r in
+            many("SELECT email FROM accounts WHERE phone_e164=%s", (phone,))]
+
+
 # --- public envelope ----------------------------------------------------------
 
 def public_view(internal_result: dict) -> dict:
@@ -165,6 +179,45 @@ def start_recovery(email: str, device_raw: str | None) -> dict:
     return {"received": True}                    # unknown OR over-budget: same view
 
 
+def _notify_guardians(requester_email: str, guardian_phone: str | None) -> None:
+    """Guardian alert for a managed dependent's recovery (§8.2 point 3): every
+    account holding the guardian phone gets an in-app row plus a pointer-only
+    email naming the dependent MASKED — never a URL (§12 load-bearing rule)."""
+    if not guardian_phone:
+        return
+    masked = notifications.mask_email(requester_email)
+    body = (f"A recovery was started for {masked}, an account you help "
+            "manage. Open your Sovereign Mail app to assist. This mailbox "
+            "does not accept actions by reply.")
+    for guardian in _accounts_with_phone(guardian_phone):
+        if guardian == requester_email:
+            continue                     # the dependent never alerts themself
+        notifications.notify(guardian, "guardian_recovery_alert",
+                             f"A recovery for {masked} awaits your help. "
+                             "Open your app to review.")
+        notifications.fan_out_email(
+            guardian, "Sovereign Mail: recovery needs guardian help", body)
+
+
+def _notify_family_window(requester_email: str, linked: list[dict]) -> None:
+    """Family-window fan-out (§13 branch pick): EVERY active&cooled linked
+    member learns a recovery awaits member approval — in-app row PLUS a
+    pointer-only email naming the requester MASKED, fired only AFTER the
+    state write has committed (same ordering as the start notification)."""
+    masked = notifications.mask_email(requester_email)
+    parties = {p for l in linked
+               for p in (l.get("requester_email"), l.get("target_email"))}
+    for member in sorted(parties - {requester_email}):
+        notifications.notify(member, "family_recovery_approval_needed",
+                             f"A recovery for {masked} awaits family "
+                             "approval. Open your app to review.")
+        notifications.fan_out_email(
+            member, "Sovereign Mail: family recovery approval needed",
+            f"A password recovery for {masked} is waiting for family "
+            "approval. Open your Sovereign Mail app to review. This mailbox "
+            "does not accept actions by reply.")
+
+
 def verify_otp(email: str, code: str) -> str:
     r = _active_for(email)
     if not r or r["status"] != "awaiting_phone":
@@ -178,15 +231,25 @@ def verify_otp(email: str, code: str) -> str:
     # Branch pick happens NOW (§13.4), never at start.
     s = get_settings()
     now = time.time()
-    linked = family.active_links_for(email)
-    if linked:
+    acct = _account_control(email)
+    managed = bool(acct) and acct.get("account_type") == "guardian_managed"
+    # §8.2 enforcement point 3: a managed account's own recovery routes to the
+    # ASSISTED ADMIN QUEUE ALWAYS — decided BEFORE any family/dwell look.
+    linked = [] if managed else family.active_links_for(email)
+    if managed:
+        r |= {"status": "pending_admin"}
+    elif linked:
         r |= {"status": "pending_family",
               "expires_at": now + s.recovery_request_ttl_seconds}
     elif r["recognized"]:
         r |= {"status": "pending_dwell", "authorized_at_ts": now}
     else:
         r |= {"status": "pending_admin"}
-    _save(r)
+    _save(r)                                     # writes commit BEFORE any ping
+    if managed:
+        _notify_guardians(email, acct.get("guardian_phone"))
+    elif linked:
+        _notify_family_window(email, linked)
     return r["status"]
 
 
@@ -198,6 +261,13 @@ def _is_linked_member(member: str, requester: str) -> bool:
                for l in family.active_links_for(requester))
 
 
+def _actor_is_managed(actor_email: str) -> bool:
+    """§8.2 enforcement point 2: a guardian_managed account cannot APPROVE
+    recoveries — the guardian acts for it."""
+    r = one("SELECT account_type FROM accounts WHERE email=%s", (actor_email,))
+    return bool(r) and r["account_type"] == "guardian_managed"
+
+
 def family_approve(member_email: str, requester_email: str) -> bool:
     """False means 'nothing changed' — standing is checked BEFORE any state
     touch and the router answers both outcomes with one constant body (R7,
@@ -206,8 +276,10 @@ def family_approve(member_email: str, requester_email: str) -> bool:
     requester = requester_email.lower()
     # member == requester is refused outright: a requester sitting on ANY link
     # would otherwise trivially self-approve their own window, defeating the
-    # two-party control the family branch exists to provide.
-    if member == requester or not _is_linked_member(member, requester):
+    # two-party control the family branch exists to provide. A MANAGED actor
+    # is refused just as silently (§8.2 point 2) — no new wire signal either way.
+    if member == requester or _actor_is_managed(member) \
+            or not _is_linked_member(member, requester):
         return False
     r = _active_for(requester)
     if not r or r["status"] != "pending_family":
@@ -285,6 +357,17 @@ def cancel(email: str, actor_email: str) -> bool:
     if not r:
         return False
     _cancel(r, f"cancelled_by:{actor_email.lower()}")
+    # §13: the OWNER learns of every cancel, whoever cancelled (themself, a
+    # linked member). Pure side effect — /cancel's constant body is untouched.
+    notifications.notify(email, "recovery_cancelled",
+                         "Your recovery request was cancelled. If this wasn't "
+                         "you, start a new recovery and contact your "
+                         "administrator immediately.")
+    notifications.fan_out_email(
+        email, "Sovereign Mail: recovery request cancelled",
+        "Your password recovery request was cancelled. If this wasn't you, "
+        "open your Sovereign Mail app and start a recovery, then contact "
+        "your administrator. This mailbox does not accept actions by reply.")
     return True
 
 

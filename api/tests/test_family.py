@@ -21,10 +21,16 @@ def world(monkeypatch):
     links: dict[int, dict] = {}
     seq = {"n": 0}
     notes: list[tuple] = []
-    emails = {"a@sovereign.mail": {"tier": "tier2_identity"},
-              "b@sovereign.mail": {"tier": "tier1_phone"},
-              "t2@sovereign.mail": {"tier": "tier2_identity"},
-              "t1@sovereign.mail": {"tier": "tier1_phone"}}
+    emails = {"a@sovereign.mail": {"tier": "tier2_identity",
+                                   "account_type": "independent"},
+              "b@sovereign.mail": {"tier": "tier1_phone",
+                                   "account_type": "independent"},
+              "t2@sovereign.mail": {"tier": "tier2_identity",
+                                    "account_type": "independent"},
+              "t1@sovereign.mail": {"tier": "tier1_phone",
+                                    "account_type": "independent"},
+              "managed@sovereign.mail": {"tier": "tier2_identity",
+                                         "account_type": "guardian_managed"}}
 
     def fake_put(l):
         seq["n"] += 1
@@ -63,6 +69,8 @@ def world(monkeypatch):
 
     monkeypatch.setattr(fm, "_account_tier",
                         lambda e: emails.get(e, {}).get("tier"))
+    monkeypatch.setattr(fm, "_account_type",
+                        lambda e: emails.get(e, {}).get("account_type"))
     monkeypatch.setattr(fm, "_pair_request_count", lambda a, b, since: sum(
         1 for l in links.values() if {l["requester"], l["target"]} ==
         {a, b} and l["created_at"] >= since))
@@ -159,6 +167,72 @@ def test_revoke_is_instant_and_notifies_both(world):
     kinds = [n[1] for n in world["notes"]]     # email copies are wider tuples
     assert "family_link_revoked" in kinds
     assert kinds.count("family_link_revoked") == 2
+
+
+# --- N1: transition fan-out reaches BOTH neighborhoods (spec §12) ------------
+
+def _seed_cooled_link(world, requester, target):
+    """Insert an already-approved-and-cooled link directly (usable now), so its
+    parties count as live members of an account's link neighborhood. Keyed at
+    1000+ so it can never collide with fake_put's sequence ids."""
+    lid = 1000 + len(world["links"])
+    world["links"][lid] = {
+        "link_id": lid,
+        "requester": requester, "target": target,
+        "status": "approved", "created_at": world["now"],
+        "expires_at_ts": world["now"] + 600,
+        "approved_at_ts": world["now"], "usable_at_ts": world["now"]}
+    return lid
+
+
+def test_approve_fans_out_to_both_neighborhoods(world):
+    """§12: EVERY transition notifies all linked members of BOTH accounts'
+    neighborhoods — in-app row plus one pointer-only email each."""
+    # a's neighborhood holds t2; t1's holds c (both usable NOW):
+    _seed_cooled_link(world, "t2@sovereign.mail", "a@sovereign.mail")
+    _seed_cooled_link(world, "t1@sovereign.mail", "c@sovereign.mail")
+    l = fm.request_link("a@sovereign.mail", "t1@sovereign.mail")
+    fm.approve(l["link_id"], "t1@sovereign.mail")
+
+    mails = [n for n in world["notes"] if n[0] == "email"
+             and "family link approved" in n[2]]
+    recipients = sorted(n[1] for n in mails)
+    # pair + both neighborhoods, deduped:
+    assert recipients == ["a@sovereign.mail", "c@sovereign.mail",
+                          "t1@sovereign.mail", "t2@sovereign.mail"]
+    for who in recipients:
+        inapp = [n for n in world["notes"]
+                 if n[0] == who and n[1] == "family_link_approved"]
+        mine = [n for n in mails if n[1] == who]
+        assert len(inapp) == 1 and len(mine) == 1    # exactly once per member
+        assert "http" not in mine[0][3].lower()      # pointer-only
+
+
+def test_revoke_fans_out_to_neighborhood_members_too(world):
+    _seed_cooled_link(world, "t2@sovereign.mail", "a@sovereign.mail")
+    l = fm.request_link("a@sovereign.mail", "t1@sovereign.mail")
+    fm.approve(l["link_id"], "t1@sovereign.mail")
+    world["notes"].clear()
+    fm.revoke(l["link_id"], "a@sovereign.mail")
+    revoked = [n for n in world["notes"] if n[0] == "email"
+               and "family link revoked" in n[2]]
+    assert sorted(n[1] for n in revoked) == [
+        "a@sovereign.mail", "t1@sovereign.mail", "t2@sovereign.mail"]
+    assert all("http" not in n[3].lower() for n in revoked)
+    # in-app rows mirror the email fan-out exactly:
+    inapp = [n for n in world["notes"] if n[0] != "email"
+             and n[1] == "family_link_revoked"]
+    assert sorted(n[0] for n in inapp) == [
+        "a@sovereign.mail", "t1@sovereign.mail", "t2@sovereign.mail"]
+
+
+def test_managed_account_cannot_create_family_link(world):
+    """§8.2 enforcement point 2: a guardian_managed caller is refused at
+    CREATE with the same NotEligible shape the router maps to 422."""
+    with pytest.raises(fm.NotEligible, match="managed"):
+        fm.request_link("managed@sovereign.mail", "a@sovereign.mail")
+    assert world["notes"] == []          # nothing notified, nothing stored
+    assert world["links"] == {}
 
 
 def test_active_links_respects_cooldown_window(world, monkeypatch):

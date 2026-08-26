@@ -257,9 +257,13 @@ What the operator can do:
   by pytest instead.
 - **Assisted-recovery grants**: a recovery parked at `pending_admin` (see
   runbook below) is authorized by
-  `POST /admin/api/recovery/{req_id}/grant` (same bearer gate). Only
-  actionable requests grant; anything else answers one generic 404, so
-  scripted probes learn nothing about state.
+  `POST /admin/api/recovery/{req_id}/grant` (same bearer gate). The queue
+  itself is listable over the same gate:
+  `GET /admin/api/recovery/pending` returns the `pending_admin` rows
+  newest-first with MASKED addresses (`a***@sovereign.mail`) — pair it with
+  the grant endpoint to work the queue browserlessly. Only actionable
+  requests grant; anything else answers one generic 404, so scripted probes
+  learn nothing about state.
 
 ## 10. Recovery runbook (`/recovery/*`, spec §13)
 
@@ -272,14 +276,16 @@ is picked ONCE, at verification time:
 
 | Stage | Meaning | What resolves it |
 |---|---|---|
-| `pending_family` | an active, cooled-down family link exists | any ONE linked member approves from their own session: `POST /recovery/family-approve {"requester_email":…}` |
+| `pending_family` | an active, cooled-down family link exists | any ONE linked member approves from their own session: `POST /recovery/family-approve {"requester_email":…}` — every member is notified at pick time (in-app + pointer-only email naming the requester masked) |
 | `pending_dwell` | a recognized device vouched | the SAME device re-sends its `X-Device-ID` after `RECOVERY_MIN_DWELL_SECONDS` elapses |
-| `pending_admin` | neither factor — assisted queue | operator grant (dashboard/API, section 9) |
+| `pending_admin` | neither factor, OR the account is guardian-managed (the guardian is alerted instead) | operator grant (dashboard/API, section 9) |
 
 All three converge on `POST /recovery/complete {email,new_password}` →
 `{"reset":true}`. Requests also die: family windows expire to `expired` with
 NO fallback to dwell (deliberate MVP choice, spec §13), owners or members can
-cancel instantly, and restarting simply burns budget again.
+cancel instantly (the owner is notified of EVERY cancellation, whoever
+cancelled; `/recovery/cancel` still answers one constant body either way),
+and restarting simply burns budget again.
 
 **Why dwell exists:** the stolen-phone scenario delivers BOTH factors at once
 (SIM = OTP, app storage = device token). The minimum-wait wall makes that
@@ -331,16 +337,22 @@ and revoke. Smoke overrides the knob to 0 so the flow completes instantly;
 production keeps 48.
 
 **Revoke.** Instant, EITHER party, from any live state, no confirmation
-theater: `POST /family/requests/{id}/revoke` kills usability immediately and
-notifies both sides. Revoked links can never approve recoveries; a fresh
-cooldown applies if they are ever re-established.
+theater: `POST /family/requests/{id}/revoke` kills usability immediately.
+Revoked links can never approve recoveries; a fresh cooldown applies if they
+are ever re-established.
 
-**Pointer-only guarantee.** Every transition notifies both members through
-our own mail stack, and those notifications NAME the event ("open the app to
-review") but NEVER carry an action URL — the smoke gate greps the delivered
-message for URLs and fails hard on any hit. This is load-bearing for the
-nothing-relayable property (spec §15.3): forwarding or phishing the email
-grants nothing.
+**Who gets told.** EVERY transition — requested, approved, revoked — notifies
+ALL linked members of BOTH accounts' neighborhoods: an in-app row plus an
+email copy into each member's sovereign mailbox. Requested/approved/expired
+transitions of recovery windows follow the same rule (see section 10); the
+expiry flip itself sends no notice because it happens lazily inside read
+paths — that notification is deferred to Phase 2 (spec §21 #15).
+
+**Pointer-only guarantee.** Those notifications NAME the event ("open the app
+to review") and identify people MASKED (`r***@sovereign.mail`) but NEVER carry
+an action URL — the smoke gate greps the delivered message for URLs and fails
+hard on any hit. This is load-bearing for the nothing-relayable property
+(spec §15.3): forwarding or phishing the email grants nothing.
 
 ## Spec §12 success-criteria audit
 

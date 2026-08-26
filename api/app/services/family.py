@@ -75,6 +75,13 @@ def _account_tier(email: str) -> str | None:
     return r and r["tier"]
 
 
+def _account_type(email: str) -> str | None:
+    """Guardianship class (§8.2): 'guardian_managed' accounts are refused at
+    the link-CREATE gate — the guardian acts for them."""
+    r = one("SELECT account_type FROM accounts WHERE email=%s", (email,))
+    return r and r["account_type"]
+
+
 def _pair_request_count(a: str, b: str, since_ts: float) -> int:
     return len(many("""SELECT 1 FROM family_links
                        WHERE ((requester_email=%s AND target_email=%s)
@@ -110,6 +117,11 @@ def pending_requests_for(email: str) -> list[dict]:
 # --- lifecycle ---------------------------------------------------------------
 
 def request_link(requester_email: str, target_email: str) -> dict:
+    if _account_type(requester_email) == "guardian_managed":
+        # §8.2 enforcement point 2: managed accounts cannot CREATE family
+        # links — the guardian acts for them. NotEligible is the router's
+        # existing 422-family tier refusal; this rides the same mapping.
+        raise NotEligible("managed accounts cannot create family links")
     if _account_tier(requester_email) != "tier2_identity":
         raise NotEligible("family linking requires Tier 2 identity verification")
     if not _account_tier(target_email):
@@ -124,18 +136,41 @@ def request_link(requester_email: str, target_email: str) -> dict:
             "status": "requested", "created_at": now,
             "expires_at_ts": now + REQUEST_TTL_SECONDS}
     stored = _put_link(link)
+    masked = notifications.mask_email(requester_email)
     notifications.notify(target_email, "family_request_received",
-                         f"{requester_email} asked to link accounts with you. "
+                         f"{masked} asked to link accounts with you. "
                          "Open your app to approve or ignore.")
     notifications.notify(requester_email, "family_request_sent",
-                         f"Request sent to {target_email}. They have "
+                         f"Request sent to {masked}. They have "
                          f"{REQUEST_TTL_SECONDS // 60} minutes to respond.")
     notifications.fan_out_email(
         target_email, "Sovereign Mail: family link request",
-        f"{requester_email} requested to link with your account. Open your "
+        f"You have a pending family-link request from {masked}. Open your "
         "Sovereign Mail app to review. This mailbox does not accept actions "
         "by reply.")
     return stored
+
+
+def _neighborhood(*emails: str) -> list[str]:
+    """Every party reachable through ANY of these accounts' usable links
+    (§12: transitions notify all linked members of BOTH neighborhoods).
+    Deduplicated, first-seen order stable."""
+    seen: list[str] = []
+    for e in emails:
+        for l in active_links_for(e):
+            for party in (l.get("requester_email"), l.get("target_email")):
+                if party and party not in seen:
+                    seen.append(party)
+    return seen
+
+
+def _fan_out_transition(recipients: list[str], type_: str, subject: str,
+                        body: str) -> None:
+    """§12 delivery rule for EVERY transition: an in-app row (source of truth)
+    plus a POINTER-ONLY email copy into each member's sovereign mailbox."""
+    for who in recipients:
+        notifications.notify(who, type_, body)
+        notifications.fan_out_email(who, subject, body)
 
 
 def approve(link_id: int, actor_email: str) -> None:
@@ -145,19 +180,31 @@ def approve(link_id: int, actor_email: str) -> None:
         raise NoSuchTarget("request no longer active")
     cooldown = get_settings().family_link_cooldown_hours * 3600
     apply_status_change("approve", (now, now + cooldown, link["link_id"]))
-    for who in (link["requester_email"], link["target_email"]):
-        notifications.notify(who, "family_link_approved",
-                             "Family link approved. Recovery assistance becomes "
-                             "available after the safety cooldown.")
+    recipients = [link["requester_email"], link["target_email"]]
+    recipients += [w for w in _neighborhood(link["requester_email"],
+                                            link["target_email"])
+                   if w not in recipients]
+    _fan_out_transition(
+        recipients, "family_link_approved",
+        "Sovereign Mail: family link approved",
+        "A family link was approved. Recovery assistance becomes available "
+        "after the safety cooldown. Open your Sovereign Mail app to review. "
+        "This mailbox does not accept actions by reply.")
 
 
 def revoke(link_id: int, actor_email: str) -> None:
     link = _require_actor(link_id, actor_email, side="either")
     apply_status_change("revoke", (actor_email, link["link_id"]))
-    for who in (link["requester_email"], link["target_email"]):
-        notifications.notify(who, "family_link_revoked",
-                             "A family link was revoked. It can no longer assist "
-                             "recovery.")
+    recipients = [link["requester_email"], link["target_email"]]
+    recipients += [w for w in _neighborhood(link["requester_email"],
+                                            link["target_email"])
+                   if w not in recipients]
+    _fan_out_transition(
+        recipients, "family_link_revoked",
+        "Sovereign Mail: family link revoked",
+        "A family link was revoked. It can no longer assist recovery. Open "
+        "your Sovereign Mail app to review. This mailbox does not accept "
+        "actions by reply.")
 
 
 def _require_actor(link_id: int, actor_email: str, *, side: str) -> dict:

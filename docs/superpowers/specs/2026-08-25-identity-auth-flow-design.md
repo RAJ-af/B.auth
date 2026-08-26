@@ -654,6 +654,9 @@ with adversarial review per wave, deviations D-numbered in the ledger.
     changes, or requiring secondary confirmation before a dependents-list query
     following a recent phone/account change. Needs threat-model work before
     anything is chosen (§15.3).
+15. Notification on family-window expiry — deferred to Phase 2: the lazy flip
+    happens INSIDE read paths (§12), so emitting mail there would side-effect
+    GETs; revisit alongside register #13.
 
 ## 22. Deliverables & Repo Layout Delta
 
