@@ -11,6 +11,17 @@ from .providers.console import send_sms as _console_sms
 log = logging.getLogger(__name__)
 
 
+def mask_email(address: str) -> str:
+    """Canonical masked address form (spec §12 body shape 'R***@sovereign.mail'):
+    keep the local part's first character only; the domain is this system's own
+    and carries no per-user information. Used by every notification body and
+    admin listing that must name an account without disclosing it."""
+    local, _, domain = address.partition("@")
+    if not domain:
+        return "***"
+    return f"{local[:1]}***@{domain}"
+
+
 def _insert(row: dict) -> dict:
     """Insert and return the COMPLETE stored row. INSERT..RETURNING supplies
     the server-generated notif_id/created_at (family-link flows need real ids);

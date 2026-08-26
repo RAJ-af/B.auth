@@ -296,6 +296,39 @@ def test_admin_grant_flips_pending_admin_to_authorized(w):
                              "new-password-long", None) == ("completed", 201)
 
 
+# --- assisted-queue listing (README §9/§10; masking idiom) ---------------------
+
+def test_list_pending_admin_masks_and_orders_newest_first(monkeypatch):
+    """Projection whitelist + masked address: the raw email never crosses the
+    service boundary, rows come back newest-first (§13 queue discipline)."""
+    seen: list[tuple] = []
+
+    def fake_many(q, p=()):
+        seen.append((q, p))
+        return [{"req_id": "rq-new", "email": "alice@sovereign.mail",
+                 "status": "pending_admin", "created_at": 1_800_000_200.0},
+                {"req_id": "rq-old", "email": "bob@sovereign.mail",
+                 "status": "pending_admin", "created_at": 1_800_000_100.0}]
+    monkeypatch.setattr(rc, "many", fake_many)
+
+    out = rc.list_pending_admin()
+    q = seen[0][0]
+    assert "status='pending_admin'" in q
+    assert "ORDER BY created_at DESC" in q
+    assert out == [
+        {"req_id": "rq-new", "email_masked": "a***@sovereign.mail",
+         "status": "pending_admin", "created_at": 1_800_000_200.0},
+        {"req_id": "rq-old", "email_masked": "b***@sovereign.mail",
+         "status": "pending_admin", "created_at": 1_800_000_100.0}]
+    import json as _json
+    assert "alice@sovereign.mail" not in _json.dumps(out)   # raw never leaks
+
+
+def test_list_pending_admin_empty(monkeypatch):
+    monkeypatch.setattr(rc, "many", lambda q, p=(): [])
+    assert rc.list_pending_admin() == []
+
+
 # --- HTTP layer pins (§15.3 wire shapes; REAL router code, faked storage) ----
 
 def _jwt_client(email: str) -> TestClient:

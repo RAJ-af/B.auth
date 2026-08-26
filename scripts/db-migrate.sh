@@ -19,8 +19,12 @@ for f in db/migrations/*.sql; do
   if [ "$($PSQL -d "${SOVEREIGN_APP_DB}" -tAc \
         "SELECT count(*) FROM schema_migrations WHERE version='${v}'")" = "0" ]; then
     echo "applying ${v}"
-    $PSQL -d "${SOVEREIGN_APP_DB}" -f - < "$f"
-    $PSQL -d "${SOVEREIGN_APP_DB}" -c "INSERT INTO schema_migrations(version) VALUES ('${v}')"
+    # --single-transaction: a mid-file failure must not leave half-applied DDL
+    # behind — ON_ERROR_STOP aborts psql and the whole file rolls back. The
+    # version stamp rides in the SAME transaction so a crash can never record
+    # a migration that did not fully apply.
+    { cat "$f"; echo "INSERT INTO schema_migrations(version) VALUES ('${v}');"; } \
+      | $PSQL --single-transaction -d "${SOVEREIGN_APP_DB}" -f -
   fi
 done
 

@@ -109,6 +109,20 @@ def public_view(internal_result: dict) -> dict:
     return {"received": True}
 
 
+def list_pending_admin() -> list[dict]:
+    """Assisted-recovery queue for operators (README §9/§10; spec §13
+    pending_admin). Projection whitelist ONLY — the raw address never crosses
+    this boundary, mirroring the reviews endpoint's masking idiom (§10.2)."""
+    rows = many("""SELECT req_id, email, status,
+                          extract(epoch from created_at)::float AS created_at
+                   FROM recovery_requests WHERE status='pending_admin'
+                   ORDER BY created_at DESC""")
+    return [{"req_id": r["req_id"],
+             "email_masked": notifications.mask_email(r["email"]),
+             "status": r["status"], "created_at": r["created_at"]}
+            for r in rows]
+
+
 # --- lifecycle ------------------------------------------------------------------
 
 def _cancel(r: dict, reason: str) -> dict:

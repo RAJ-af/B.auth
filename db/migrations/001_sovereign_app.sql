@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS family_links (
   link_id BIGSERIAL PRIMARY KEY,
   requester_email TEXT NOT NULL REFERENCES accounts(email),
   target_email TEXT NOT NULL REFERENCES accounts(email),
+  -- 'expired' is a RESERVED enum value: no writer exists by design. MVP
+  -- enforces expiry by comparing created_at/expires_at against the clock at
+  -- decision time (spec §12 lazy flip on read) — never by flipping this row.
   status TEXT NOT NULL CHECK (status IN ('requested','approved','revoked','expired')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ NOT NULL,           -- requested-state TTL (10 min)

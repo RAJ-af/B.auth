@@ -223,6 +223,13 @@ def api_approve(review_id: int, claims: dict = Depends(require_admin)):
     return {"ok": True}
 
 
+@router.get("/api/recovery/pending")
+def api_recovery_pending(claims: dict = Depends(require_admin)):
+    """Assisted-recovery queue listing (spec §13): pending_admin rows, newest
+    first, masked identities only — same projection discipline as /api/reviews."""
+    return {"requests": rc.list_pending_admin()}
+
+
 @router.post("/api/recovery/{req_id}/grant")
 def api_recovery_grant(req_id: str, claims: dict = Depends(require_admin)):
     """Bearer path granting a pending_admin recovery (spec §13); the dashboard

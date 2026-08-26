@@ -249,3 +249,37 @@ def test_approve_maps_missing_account_to_409(world, queue, monkeypatch):
                              headers={"Authorization": f"Bearer {ROLE_TOKEN}"})
     assert r.status_code == 409
     assert "no accounts row" in r.json()["detail"]
+
+
+# --- assisted-recovery listing: GET /admin/api/recovery/pending ---------------
+
+def _pending_rows():
+    return [{"req_id": "rq-2", "email_masked": "a***@sovereign.mail",
+             "status": "pending_admin", "created_at": 1_800_000_200.0},
+            {"req_id": "rq-1", "email_masked": "b***@sovereign.mail",
+             "status": "pending_admin", "created_at": 1_800_000_100.0}]
+
+
+def test_recovery_pending_requires_admin(world, monkeypatch):
+    # Same dual-mode guard as every /admin/api/* route: no session/bearer -> 403,
+    # a bearer WITHOUT the realm role -> 403. No body oracle either way.
+    monkeypatch.setattr(ar.rc, "list_pending_admin", _pending_rows)
+    assert world["client"].get(
+        "/admin/api/recovery/pending").status_code == 403
+    bad = world["client"].get("/admin/api/recovery/pending",
+                              headers={"Authorization":
+                                       f"Bearer {NO_ROLE_TOKEN}"})
+    assert bad.status_code == 403
+
+
+def test_recovery_pending_lists_masked_newest_first(world, monkeypatch):
+    monkeypatch.setattr(ar.rc, "list_pending_admin", _pending_rows)
+    r = world["client"].get("/admin/api/recovery/pending",
+                            headers={"Authorization": f"Bearer {ROLE_TOKEN}"})
+    assert r.status_code == 200
+    reqs = r.json()["requests"]
+    assert [x["req_id"] for x in reqs] == ["rq-2", "rq-1"]   # newest first
+    # whitelist projection + masked address; raw email key can never appear:
+    assert all(set(x) == {"req_id", "email_masked", "status", "created_at"}
+               for x in reqs)
+    assert "alice@sovereign.mail" not in r.text
