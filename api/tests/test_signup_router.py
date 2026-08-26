@@ -30,8 +30,9 @@ def w(monkeypatch):
     monkeypatch.setattr(sr.ldap_admin, "address_exists",
                         lambda e: e == "taken@sovereign.mail")
 
-    def fake_create(email, display_name, password):
-        ldap_created.append((email, display_name, password))
+    def fake_create(email, display_name, password=None, password_ssha=None):
+        ldap_created.append((email, display_name,
+                             password_ssha or password))
     monkeypatch.setattr(sr.ldap_admin, "create_user", fake_create)
 
     def fake_send(phone, purpose, channel="sms"):
@@ -184,7 +185,7 @@ def test_ldap_down_503_session_retained_then_recovers(w, monkeypatch):
     payload = {"token": tok, "choice": {"kind": "skip"},
                "password": "long-enough-password-1"}
 
-    def down(email, display_name, password):
+    def down(email, display_name, password=None, password_ssha=None):
         raise sr.ldap_admin.LdapUnavailable("connection refused")
     monkeypatch.setattr(sr.ldap_admin, "create_user", down)
 
@@ -192,8 +193,9 @@ def test_ldap_down_503_session_retained_then_recovers(w, monkeypatch):
     assert r.status_code == 503
     assert tok in w["sessions"]              # session survives the outage
 
-    def recovered(email, display_name, password):
-        w["ldap_created"].append((email, display_name, password))
+    def recovered(email, display_name, password=None, password_ssha=None):
+        w["ldap_created"].append((email, display_name,
+                                  password_ssha or password))
     monkeypatch.setattr(sr.ldap_admin, "create_user", recovered)
 
     r2 = w["client"].post("/signup/complete", json=payload)
@@ -429,3 +431,129 @@ def sr_settings():
 def idverify_mod():
     from app.services import idverify
     return idverify
+
+
+# --- G1: multi-identity pause + identity-choice (§8.2/§8.4/§10.2) ------------
+
+def _auto_multi(payload):
+    return {"contract_version": 1, "verified": True,
+            "identities": [
+                {"id_ref": "gov-1", "name": "Ravi Kumar",
+                 "id_type": "aadhaar", "is_minor": False},
+                {"id_ref": "gov-2", "name": "Child One",
+                 "id_type": "dependent", "is_minor": True}],
+            "warnings": []}
+
+
+def _pause_setup(w, monkeypatch, identities=_auto_multi):
+    monkeypatch.setattr(sr_settings(), "idverify_mode", "auto")
+    monkeypatch.setattr(idverify_mod(), "run_auto_check", identities)
+    tok = _start(w)
+    w["client"].post("/signup/verify-otp", json={"token": tok,
+                                                 "code": "123456"})
+    r = w["client"].post("/signup/complete",
+                         json={"token": tok, "choice": _submit_id_choice(),
+                               "password": "long-enough-password-1"})
+    return tok, r
+
+
+def test_multi_identity_pauses_200_with_masked_choices(w, monkeypatch):
+    """§8.4 pause union member: HTTP 200 (NOT 201 — nothing was created),
+    masked choices only, session retained and marked, no provisioning."""
+    tok, r = _pause_setup(w, monkeypatch)
+    b = r.json()
+    assert r.status_code == 200 and r.status_code != 201   # pause ≠ created
+    assert b["stage"] == "choose_identity"
+    assert [c["id_ref"] for c in b["choices"]] == ["gov-1", "gov-2"]
+    assert [c["name_masked"] for c in b["choices"]] == \
+        ["R*** K***", "C*** O***"]
+    assert [c["is_minor"] for c in b["choices"]] == [False, True]
+    # nothing was provisioned:
+    assert w["ldap_created"] == []
+    assert not any("INSERT INTO accounts" in q for q, _ in w["sql"])
+    # session retained, marked with offered refs + hashed credential only:
+    sess = w["sessions"][tok]
+    assert sess["stage"] == "choose_identity"
+    blob = json.dumps(sess)
+    assert "Ravi" not in blob and "Child" not in blob      # masked names only
+    assert "long-enough-password-1" not in blob            # plaintext NEVER stored
+    assert sess["payload"]["password_ssha"].startswith("{SSHA}")
+    assert {c["id_ref"] for c in sess["payload"]["offered_identities"]} == \
+        {"gov-1", "gov-2"}
+
+
+def test_identity_choice_happy_path_creates_then_burns_session(w, monkeypatch):
+    tok, _ = _pause_setup(w, monkeypatch)
+    r = w["client"].post("/signup/identity-choice",
+                         json={"token": tok, "id_ref": "gov-1"})
+    assert r.status_code == 201, r.text                    # created shape now
+    b = r.json()
+    assert (b["account"], b["tier"], b["verification"]) == (
+        "active", "tier2_identity", "auto_verified")
+    assert w["ldap_created"][0][0] == "newuser@sovereign.mail"
+    row = next(p for q, p in w["sql"] if "INSERT INTO accounts" in q)
+    assert row[3] == "independent" and row[5] == "tier2_identity"
+    # ONE-TIME consumption: replaying the same choice cannot re-provision
+    assert tok not in w["sessions"]
+    r2 = w["client"].post("/signup/identity-choice",
+                          json={"token": tok, "id_ref": "gov-1"})
+    assert r2.status_code == 400
+    assert len(w["ldap_created"]) == 1
+
+
+def test_identity_choice_minor_pick_creates_managed_account(w, monkeypatch):
+    """Choosing the MINOR identity => guardian_managed whose guardian_phone is
+    the phone that just proved possession (no chicken-and-egg, §8.2)."""
+    tok, _ = _pause_setup(w, monkeypatch)
+    r = w["client"].post("/signup/identity-choice",
+                         json={"token": tok, "id_ref": "gov-2"})
+    assert r.status_code == 201
+    row = next(p for q, p in w["sql"] if "INSERT INTO accounts" in q)
+    assert row[3] == "guardian_managed"
+    assert row[4] == "+911234567890"          # the proven signup phone
+
+
+def test_identity_choice_wrong_ref_422_retains_session(w, monkeypatch):
+    """An unoffered id_ref is a validation failure: 422, nothing provisioned,
+    pause preserved so a correct choice still works."""
+    tok, _ = _pause_setup(w, monkeypatch)
+    r = w["client"].post("/signup/identity-choice",
+                         json={"token": tok, "id_ref": "gov-9"})
+    assert r.status_code == 422
+    assert tok in w["sessions"]               # retained for a real retry
+    assert w["ldap_created"] == []
+    r2 = w["client"].post("/signup/identity-choice",
+                          json={"token": tok, "id_ref": "gov-1"})
+    assert r2.status_code == 201              # recovery path intact
+
+
+def test_identity_choice_unknown_session_400(w, monkeypatch):
+    r = w["client"].post("/signup/identity-choice",
+                         json={"token": "nope", "id_ref": "x"})
+    assert r.status_code == 400
+
+
+def test_single_minor_identity_creates_managed_account_directly(w, monkeypatch):
+    """Exactly one MINOR identity: NO pause — straight to guardian-managed
+    tier2 creation with guardian_phone = proven phone."""
+    def single_minor(payload):
+        return {"contract_version": 1, "verified": True,
+                "identities": [{"id_ref": "kid-1", "name": "Small Person",
+                                "id_type": "dependent", "is_minor": True}],
+                "warnings": []}
+    monkeypatch.setattr(sr_settings(), "idverify_mode", "auto")
+    monkeypatch.setattr(idverify_mod(), "run_auto_check", single_minor)
+    tok = _start(w)
+    w["client"].post("/signup/verify-otp", json={"token": tok,
+                                                 "code": "123456"})
+    r = w["client"].post("/signup/complete",
+                         json={"token": tok, "choice": _submit_id_choice(),
+                               "password": "long-enough-password-1"})
+    assert r.status_code == 201               # no pause, no choose_identity
+    b = r.json()
+    assert (b["tier"], b["verification"]) == ("tier2_identity", "auto_verified")
+    assert "choose_identity" not in json.dumps(b)
+    row = next(p for q, p in w["sql"] if "INSERT INTO accounts" in q)
+    assert row[3] == "guardian_managed"
+    assert row[4] == "+911234567890"          # guardian_phone = proven phone
+    assert tok not in w["sessions"]           # consumed like any completion

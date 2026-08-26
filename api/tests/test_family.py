@@ -235,6 +235,46 @@ def test_managed_account_cannot_create_family_link(world):
     assert world["links"] == {}
 
 
+# --- §8.2 point 1: GET /account/dependents (guardian roster) ------------------
+
+def test_dependents_lists_only_phone_matched_managed_accounts_masked(
+        monkeypatch):
+    import app.db as appdb
+
+    queries: list[tuple] = []
+
+    def fake_one(q, p=()):
+        queries.append((q, p))
+        return {"phone_e164": "+910000000001"}     # the JWT caller's phone
+
+    def fake_many(q, p=()):
+        queries.append((q, p))
+        return [{"email": "kid1@sovereign.mail",
+                 "display_name": "Kid One",
+                 "created_at": "2026-08-25T09:00:00+00:00"},
+                {"email": "kid2@sovereign.mail",
+                 "display_name": "Kid Two",
+                 "created_at": "2026-08-25T10:00:00+00:00"}]
+    monkeypatch.setattr(appdb, "one", fake_one)
+    monkeypatch.setattr(appdb, "many", fake_many)
+
+    client = _jwt_client(monkeypatch)
+    r = client.get("/account/dependents",
+                   headers={"Authorization": "Bearer faketoken"})
+    assert r.status_code == 200
+    deps = r.json()["dependents"]
+    assert [d["email_masked"] for d in deps] == \
+        ["k***@sovereign.mail", "k***@sovereign.mail"]
+    assert [d["display_name"] for d in deps] == ["Kid One", "Kid Two"]
+    # the lookup is structural: managed accounts matched by GUARDIAN phone only
+    roster_q = queries[-1][0]
+    assert "account_type='guardian_managed'" in roster_q
+    assert "guardian_phone=%s" in roster_q
+    assert queries[0][1] == (JWT_EMAIL,)          # scoped to the caller's row
+    # raw addresses never cross the wire:
+    assert "kid1@sovereign.mail" not in r.text
+
+
 def test_active_links_respects_cooldown_window(world, monkeypatch):
     l = fm.request_link("a@sovereign.mail", "t1@sovereign.mail")
     fm.approve(l["link_id"], "t1@sovereign.mail")

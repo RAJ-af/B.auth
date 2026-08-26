@@ -65,13 +65,18 @@ def address_exists(email: str) -> bool:
         return bool(c.entries)
 
 
-def create_user(email: str, display_name: str, password: str) -> None:
+def create_user(email: str, display_name: str, password: str = "",
+                password_ssha: str | None = None) -> None:
+    """Create a person entry. Either pass the PLAINTEXT password (hashed here,
+    the normal signup path) or a PRE-HASHED {SSHA} string via password_ssha —
+    used by the identity-choice flow, which must provision from a paused
+    session without ever persisting the plaintext beyond the request."""
     _validated_email(email)
     dn = f"mail={email},ou=people,{base_dn()}"
     with _connect() as c:
         ok = c.add(dn, ["inetOrgPerson"],
                    {"cn": display_name, "sn": display_name, "mail": email,
-                    "userPassword": ssha(password)})
+                    "userPassword": password_ssha or ssha(password)})
         desc = str(c.result.get("description", ""))
     if ok:
         log.info("ldap user created: %s", email)

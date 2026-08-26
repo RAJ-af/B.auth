@@ -238,6 +238,27 @@ def test_family_approve_without_standing_changes_nothing(w):
     assert out["decided_by"] is None                  # nothing was written
 
 
+def test_managed_approver_leaves_request_untouched_wire_silent(w, monkeypatch):
+    """§8.2 point 2 + R7 oracle at the HTTP layer: a managed actor's
+    family-approve attempt — even sitting on a usable link — changes NOTHING
+    and sees the SAME constant body as everyone else."""
+    monkeypatch.setattr(rc, "_actor_is_managed",
+                        lambda e: e == "managed@sovereign.mail")
+    w["links"].append({"member_of": "alice@sovereign.mail",
+                       "partner": "managed@sovereign.mail"})
+    out = rc.start_recovery("alice@sovereign.mail", None)
+    rc.verify_otp("alice@sovereign.mail", "123456")
+    assert out["status"] == "pending_family"
+
+    c = _jwt_client("managed@sovereign.mail")
+    resp = c.post("/recovery/family-approve",
+                  json={"requester_email": "alice@sovereign.mail"})
+    assert resp.status_code == 200
+    assert resp.content == START_BODY         # wire-silent refusal (R7)
+    assert out["status"] == "pending_family"  # request untouched
+    assert out["decided_by"] is None          # nothing was written
+
+
 def test_family_approve_self_approval_refused(w):
     """R7 pinning: sitting on a usable link does NOT let the requester approve
     their own window — two-party control holds even for linked accounts."""

@@ -214,6 +214,24 @@ Skipping the ID costs nothing: it can be submitted later from account
 settings, and completion NEVER blocks on identity problems (soft-fallback
 union, spec §8.4).
 
+**Multi-document pause (`choose_identity`) and guardian accounts.** When an
+AUTO verification returns MULTIPLE identities on one document, signup PAUSES
+instead of deciding for you (spec §10.2): `/signup/complete` answers
+HTTP 200 `{stage:"choose_identity", choices:[{id_ref, name_masked,
+id_type, is_minor}]}` — names arrive pre-masked (`R*** K***`) — and the
+session stays alive its normal 900 s. Pick with
+`POST /signup/identity-choice {token, id_ref}` to provision from that
+identity and burn the session (one-time consumption; an unoffered `id_ref`
+is a 422 and retains the session). A single MINOR identity never pauses:
+it provisions straight to a `guardian_managed` account whose
+`guardian_phone` is the phone that just proved possession. Structural
+guardianship (§8.2) is enforced at three points: guardians list their
+dependents via `GET /account/dependents` (masked); managed accounts cannot
+CREATE family links (422) and cannot APPROVE recoveries (refused
+wire-silently, like any non-standing caller); and a managed account's own
+recovery ALWAYS lands in the assisted admin queue with the phone-matched
+guardians notified.
+
 **`IDVERIFY_MODE`** lives in `.env` and is read at boot — change it, then
 `docker compose up -d --force-recreate api`:
 

@@ -24,6 +24,26 @@ def my_notifications(user: dict = Depends(get_current_user)):
     return {"notifications": nf.list_for(user["email"])}
 
 
+@router.get("/dependents")
+def dependents(user: dict = Depends(get_current_user)):
+    """Guardian roster (§8.2 enforcement point 1): managed accounts whose
+    guardian_phone equals THIS caller's account phone. Phones are deliberately
+    non-unique (spec §6), so one number can control several dependents.
+    Projection whitelist + masked address — same idiom as admin listings."""
+    from ..db import many, one
+    me = one("SELECT phone_e164 FROM accounts WHERE email=%s",
+             (user["email"],))
+    if not me:
+        raise HTTPException(404, "no profile row (seeded-before-migration user?)")
+    rows = many("""SELECT email, display_name, created_at FROM accounts
+                   WHERE account_type='guardian_managed' AND guardian_phone=%s
+                   ORDER BY created_at""", (me["phone_e164"],))
+    return {"dependents": [
+        {"email_masked": nf.mask_email(r["email"]),
+         "display_name": r["display_name"], "created_at": r["created_at"]}
+        for r in rows]}
+
+
 @router.post("/notifications/{notif_id}/read")
 def mark(notif_id: int, user: dict = Depends(get_current_user)):
     nf.mark_read(user["email"], notif_id)

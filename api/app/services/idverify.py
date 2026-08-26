@@ -39,6 +39,12 @@ class IdentityOutcome:
     verification: str            # pending_identity | auto_verified | manual_pending...
     identity_status: str | None  # extra field for the /signup/complete body
     reason_detail: str | None
+    # §10.2 multi-identity PAUSE: when set, signup stops before provisioning
+    # and the client must pick one offered identity (/signup/identity-choice).
+    pause_choices: list[dict] | None = None
+    # §8.2 single-MINOR document: no pause — provision straight to a
+    # guardian_managed tier2 account (guardian_phone assigned by the router).
+    guardian_minor: bool = False
 
 
 def run_auto_check(payload: dict) -> dict:
@@ -90,19 +96,45 @@ def run_auto_check(payload: dict) -> dict:
     return out
 
 
+def _mask_name(name: str) -> str:
+    """§10.2 masking style: 'Ravi Kumar' -> 'R*** K***'. Only masked names may
+    cross into signup responses or session payloads."""
+    parts = [p for p in str(name or "").split() if p]
+    return " ".join(p[0] + "***" for p in parts) or "***"
+
+
+def _choices(ids: list[dict]) -> list[dict]:
+    """The §8.4 pause union member's choice rows: id_ref (verifier-supplied,
+    else a stable positional fallback), MASKED name, id_type, is_minor."""
+    out = []
+    for n, ident in enumerate(ids, start=1):
+        out.append({"id_ref": ident.get("id_ref") or f"id-{n}",
+                    "name_masked": _mask_name(ident.get("name", "")),
+                    "id_type": ident.get("id_type") or ident.get("type")
+                    or "unknown_id_type",
+                    "is_minor": bool(ident.get("is_minor"))})
+    return out
+
+
 def map_result(result: dict, *, email: str) -> IdentityOutcome:
-    """Tri-state mapping per §10.2. Multi-identity payloads are summarized with
-    COUNTS ONLY — names/types/masked numbers never leave this function."""
+    """Mapping per §10.2/§10.3. Exactly one NON-minor identity -> tier2;
+    MULTIPLE identities -> PAUSE with masked choices (user picks which
+    identity this account is for); exactly one MINOR identity ->
+    guardian-managed tier2, no pause; zero/false -> verified:false tier1.
+    Multi-identity payloads expose MASKED choices only — raw names/types/
+    numbers never leave this function."""
     ids = result.get("identities", [])
     if result.get("verified") and len(ids) == 1 and not ids[0].get("is_minor"):
         return IdentityOutcome("tier2_identity", "auto_verified", None, None)
-    if result.get("verified"):
-        minors = sum(1 for i in ids if i.get("is_minor"))
-        adults = len(ids) - minors
-        return IdentityOutcome(
-            "tier1_phone", "pending_identity", "queued_manual_review",
-            f"document carries {adults} adult and {minors} minor "
-            "identit(y/ies) — routed to manual review")
+    if result.get("verified") and len(ids) > 1:
+        return IdentityOutcome("tier1_phone", "pending_identity",
+                               "choose_identity", None,
+                               pause_choices=_choices(ids))
+    if result.get("verified") and len(ids) == 1:
+        # Single MINOR document: straight to guardian-managed Tier 2 (§8.2) —
+        # the ID system's is_minor flag is honored structurally, no pause.
+        return IdentityOutcome("tier2_identity", "auto_verified", None, None,
+                               guardian_minor=True)
     warns = [w for w in result.get("warnings", [])
              if isinstance(w, str) and _WARN.fullmatch(w)] or ["unspecified"]
     warn = ", ".join(warns)

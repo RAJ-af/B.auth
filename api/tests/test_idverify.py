@@ -151,14 +151,26 @@ def test_tri_state_mapping():
                       email="u@sovereign.mail")
     assert (o.tier, o.verification) == ("tier2_identity", "auto_verified")
     assert o.identity_status is None
-    # multi-identity -> MANUAL queue, masked summary only (§10.2)
+    assert not o.pause_choices and not o.guardian_minor
+    # multi-identity -> PAUSE with masked choices (§10.2), never a verdict
     o = iv.map_result({"verified": True, "identities": [
-        {"is_minor": False}, {"is_minor": True}], "warnings": []},
-        email="f@sovereign.mail")
-    assert (o.tier, o.verification, o.identity_status) == (
-        "tier1_phone", "pending_identity", "queued_manual_review")
-    assert o.reason_detail and "minor" in o.reason_detail.lower()
-    assert "Child" not in json.dumps(o.reason_detail)   # masking: names never leak
+        {"id_ref": "a-1", "name": "Ravi Kumar", "id_type": "aadhaar",
+         "is_minor": False},
+        {"name": "Child One", "id_type": "dependent", "is_minor": True}],
+        "warnings": []}, email="f@sovereign.mail")
+    assert o.pause_choices and not o.guardian_minor
+    assert [c["id_ref"] for c in o.pause_choices] == ["a-1", "id-2"]
+    assert [c["name_masked"] for c in o.pause_choices] == \
+        ["R*** K***", "C*** O***"]
+    assert [c["id_type"] for c in o.pause_choices] == ["aadhaar", "dependent"]
+    assert [c["is_minor"] for c in o.pause_choices] == [False, True]
+    assert "Ravi" not in json.dumps(o.pause_choices)   # masking: names never leak
+    # verified single MINOR identity -> guardian-managed tier2, no pause
+    o = iv.map_result({"verified": True,
+                       "identities": [{"is_minor": True}]},
+                      email="k@sovereign.mail")
+    assert (o.tier, o.verification) == ("tier2_identity", "auto_verified")
+    assert o.guardian_minor is True and not o.pause_choices
     # not verified -> stays tier1 with explicit status
     o = iv.map_result({"verified": False, "identities": [], "warnings": ["x"]},
                       email="n@sovereign.mail")

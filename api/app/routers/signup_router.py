@@ -12,11 +12,13 @@ import secrets
 import time
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..config import get_settings
 from ..services import ldap_admin, otp_service
 from ..services.idverify import IdentityOutcome
+from ..ssha_util import ssha
 
 router = APIRouter(prefix="/signup", tags=["signup"])
 
@@ -101,9 +103,12 @@ class CompleteBody(BaseModel):
     password: str
 
 
-def _provision_account_strict(payload: dict, password: str) -> None:
-    """Create LDAP entry + accounts row. Raises 409-shaped AddressTaken upward."""
-    ldap_admin.create_user(payload["email"], payload["display_name"], password)
+def _provision_account_strict(payload: dict, password: str | None = None,
+                              *, password_ssha: str | None = None) -> None:
+    """Create LDAP entry + accounts row. Raises 409-shaped AddressTaken upward.
+    Exactly one of password / password_ssha must be supplied (see create_user)."""
+    ldap_admin.create_user(payload["email"], payload["display_name"], password,
+                           password_ssha=password_ssha)
     from ..db import execute
     execute("""INSERT INTO accounts (email,display_name,phone_e164,account_type,
                                      guardian_phone,tier,verification,status)
@@ -187,6 +192,15 @@ def complete(body: CompleteBody):
     extra: dict = {}
     if kind == "submit_id":
         outcome = _run_identity_step(body.choice, p)     # never raises user-facing 5xx
+        if outcome.pause_choices is not None:
+            return _pause_for_identity_choice(body.token, p, body.password,
+                                              outcome.pause_choices)
+        if outcome.guardian_minor:
+            # §8.2: single-minor document provisions STRAIGHT to a managed
+            # account — no pause; the ID system's flag overrides whatever
+            # account_type the client declared at start.
+            p = p | {"account_type": "guardian_managed",
+                     "guardian_phone": p["phone_e164"]}
         if outcome.tier == "tier2_identity":
             final_tier, final_verification = outcome.tier, outcome.verification
         elif outcome.reason_detail:
@@ -221,3 +235,60 @@ def _run_identity_step(choice: dict, payload: dict) -> IdentityOutcome:
     from ..services.idverify import outcome_for_mode
     return outcome_for_mode(get_settings().idverify_mode, choice,
                             payload.get("email", ""))
+
+
+def _pause_for_identity_choice(token: str, p: dict, password: str,
+                               choices: list[dict]) -> JSONResponse:
+    """§8.4 'Multi-identity pause' union member. NOTHING was created, so this
+    is deliberately NOT the route's 201 — HTTP 200 with {stage, choices}.
+    The session is RETAINED and marked with the offered id_refs; the password
+    is kept ONLY as its {SSHA} hash inside the TTL-bounded session row and is
+    burned at choice time (never persisted as plaintext)."""
+    marked = p | {"offered_identities": choices,
+                  "password_ssha": ssha(password)}
+    _update_session(token, marked, "choose_identity")
+    return JSONResponse(status_code=200,
+                        content={"stage": "choose_identity",
+                                 "choices": choices})
+
+
+class IdentityChoiceBody(BaseModel):
+    token: str
+    id_ref: str
+
+
+@router.post("/identity-choice", status_code=201)
+def identity_choice(body: IdentityChoiceBody):
+    """§8.2 resume path for the multi-identity pause: provisions the account
+    from the stored payload plus the chosen identity, then burns the session.
+    One-time consumption — any successful choice deletes it; validation
+    failures and directory outages retain it so the client may retry."""
+    sess = _get_session(body.token)
+    if not sess or sess["stage"] != "choose_identity":
+        raise HTTPException(400, "unknown session or no identity choice pending")
+    p = sess["payload"]
+    if not p.get("password_ssha"):
+        raise HTTPException(400, "paused session carries no credential material")
+    chosen = next((c for c in (p.get("offered_identities") or [])
+                   if c.get("id_ref") == body.id_ref), None)
+    if chosen is None:
+        raise HTTPException(422, "id_ref was not among offered choices")
+    payload = p | {"final_tier": "tier2_identity",
+                   "final_verification": "auto_verified"}
+    if chosen.get("is_minor"):
+        # Chosen identity is a minor -> guardian_managed; guardian_phone is
+        # the phone that just proved possession (no chicken-and-egg, §8.2).
+        payload |= {"account_type": "guardian_managed",
+                    "guardian_phone": p["phone_e164"]}
+    try:
+        _provision_account_strict(payload, password_ssha=p["password_ssha"])
+    except ldap_admin.AddressTaken:
+        raise HTTPException(409, "Address already registered")
+    except ldap_admin.LdapUnavailable as e:
+        # Same contract as /complete: honest 503, session RETAINED so the
+        # client can re-choose once the directory recovers.
+        raise HTTPException(503, f"directory unavailable: {e}")
+    _delete_session(body.token)
+    return {"account": "active", "email": payload["email"],
+            "tier": "tier2_identity", "verification": "auto_verified",
+            "message": "Account ready."}
