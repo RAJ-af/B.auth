@@ -61,6 +61,11 @@ all three recovery outcomes). The three overrides from step 5 are SMOKE-TIME
 settings only; switch `IDVERIFY_MODE` back and restore the production cooldown/
 dwell defaults before any non-lab use (sections 8 and 10).
 
+**Warning:** `TEST_USER_*` identities in `.env` must stay synthetic — never
+point them at real user addresses in a production deployment, since
+`smoke-test.sh` resets their LDAP passwords on every run and logs into them
+throughout.
+
 ## 3. Trusting the internal CA (`rootCA.pem`)
 
 Dovecot/API/Postfix serve certificates signed by the lab CA generated inside
